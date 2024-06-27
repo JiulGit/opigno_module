@@ -1,0 +1,10 @@
+name: Opigno Module Group
+type: module
+description: Implement Module entity with Group content.
+core_version_requirement: ^9 || ^10
+package: Opigno
+
+# Information added by Drupal.org packaging script on 2022-11-13
+version: '3.0.4'
+project: 'opigno_module'
+datestamp: 1668362227

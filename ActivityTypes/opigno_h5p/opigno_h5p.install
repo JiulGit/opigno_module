@@ -1,0 +1,101 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function opigno_h5p_schema() {
+  return [
+    'opigno_h5p_user_answer_results' => [
+      'description' => 'Table storing user H5P answer results.',
+      'fields' => [
+        'id' => [
+          'description' => 'Primary Key: The identifier of the user result per H5P',
+          'type' => 'serial',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+        ],
+        'parent_id' => [
+          'description' => 'If h5p content has parent content.',
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => FALSE,
+        ],
+        'question_id' => [
+          'description' => 'Opigno activity id.',
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+        ],
+        'question_vid' => [
+          'description' => 'Opigno activity vid.',
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+        ],
+        'answer_id' => [
+          'description' => 'Opigno answer id.',
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => TRUE,
+        ],
+        'answer_vid' => [
+          'description' => 'Opigno answer vid.',
+          'type' => 'int',
+          'unsigned' => TRUE,
+          'not null' => FALSE,
+        ],
+        'score_scaled' => [
+          'type' => 'float',
+          'size' => 'medium',
+        ],
+        'score_raw' => [
+          'type' => 'float',
+          'size' => 'medium',
+        ],
+        'score_min' => [
+          'type' => 'float',
+          'size' => 'medium',
+        ],
+        'score_max' => [
+          'type' => 'float',
+          'size' => 'medium',
+        ],
+        'interaction_type' => [
+          'type' => 'varchar',
+          'length' => 255,
+          'not null' => TRUE,
+          'default' => '',
+        ],
+        'description' => [
+          'type' => 'text',
+          'size' => 'medium',
+        ],
+        'correct_responses_pattern' => [
+          'type' => 'text',
+          'size' => 'medium',
+        ],
+        'response' => [
+          'type' => 'text',
+          'size' => 'medium',
+        ],
+        'additionals' => [
+          'type' => 'text',
+          'size' => 'medium',
+        ],
+      ],
+      'primary key' => ['id'],
+      'indexes' => [
+        'answer_id' => ['answer_id'],
+        'answer_vid' => ['answer_vid'],
+        'question_id' => ['question_id'],
+        'question_vid' => ['question_vid'],
+      ],
+    ],
+  ];
+}
+

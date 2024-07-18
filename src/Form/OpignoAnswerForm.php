@@ -2,17 +2,26 @@
 
 namespace Drupal\opigno_module\Form;
 
+use Drupal\Component\Datetime\TimeInterface;
+use Drupal\Core\Database\Connection;
 use Drupal\Core\Entity\ContentEntityForm;
+use Drupal\Core\Entity\EntityRepositoryInterface;
+use Drupal\Core\Entity\EntityTypeBundleInfoInterface;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Link;
+use Drupal\Core\Mail\MailManagerInterface;
+use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\Url;
 use Drupal\group\Entity\Group;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedContent;
 use Drupal\opigno_group_manager\OpignoGroupContext;
+use Drupal\opigno_module\ActivityAnswerManager;
+use Drupal\opigno_module\ActivityAnswerPluginInterface;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_learning_path\LearningPathContent;
 use Drupal\opigno_module\Entity\OpignoAnswer;
 use Drupal\opigno_module\Entity\OpignoModule;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
  * Form controller for Answer edit forms.
@@ -21,11 +30,64 @@ use Drupal\opigno_module\Entity\OpignoModule;
  */
 class OpignoAnswerForm extends ContentEntityForm {
 
+  use StringTranslationTrait;
+
+  /**
+   * Service "plugin.manager.activity_answer" definition.
+   *
+   * @var \Drupal\opigno_module\ActivityAnswerManager
+   */
+  protected $activityAnswerManager;
+
+  /**
+   * Service "plugin.manager.mail" definition.
+   *
+   * @var \Drupal\Core\Mail\MailManager
+   */
+  protected $pluginMailManager;
+
+  /**
+   * Service "database" definition.
+   *
+   * @var \Drupal\Core\Database\Connection
+   */
+  protected $databaseConnection;
+
+  /**
+   * Constructor for OpignoAnswerForm.
+   */
+  public function __construct(
+    EntityRepositoryInterface $entity_repository,
+    EntityTypeBundleInfoInterface $entity_type_bundle_info,
+    TimeInterface $time,
+    ActivityAnswerManager $activity_answer_manager,
+    MailManagerInterface $plugin_mail_manager,
+    Connection $database) {
+    parent::__construct($entity_repository, $entity_type_bundle_info, $time);
+    $this->activityAnswerManager = $activity_answer_manager;
+    $this->pluginMailManager = $plugin_mail_manager;
+    $this->databaseConnection = $database;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container) {
+    return new static(
+      $container->get('entity.repository'),
+      $container->get('entity_type.bundle.info'),
+      $container->get('datetime.time'),
+      $container->get('plugin.manager.activity_answer'),
+      $container->get('plugin.manager.mail'),
+      $container->get('database')
+    );
+  }
+
   /**
    * {@inheritdoc}
    */
   public function buildForm(array $form, FormStateInterface $form_state) {
-    /* @var $entity \Drupal\opigno_module\Entity\OpignoAnswer */
+    /** @var \Drupal\opigno_module\Entity\OpignoAnswer $entity */
     $form = parent::buildForm($form, $form_state);
     // Hide revision_log_message field.
     unset($form['revision_log_message']);
@@ -60,7 +122,8 @@ class OpignoAnswerForm extends ContentEntityForm {
       $first_activity = $first_activity !== FALSE
         ? OpignoActivity::load($first_activity->id)
         : NULL;
-      $current_activity = \Drupal::routeMatch()->getParameter('opigno_activity');
+      $current_activity = $this->getRouteMatch()
+        ->getParameter('opigno_activity');
 
       $has_first_activity = $first_activity !== NULL;
       $has_current_activity = $current_activity !== NULL;
@@ -75,7 +138,7 @@ class OpignoAnswerForm extends ContentEntityForm {
         $parents = $content->getParentsLinks();
         if (!$module->getBackwardsNavigation()
           || (empty($parents) && $is_on_first_activity)
-          ||  $this->currentUser()->id() === 0) {
+          || $this->currentUser()->id() === 0) {
           $form['actions']['back']['#attributes']['disabled'] = TRUE;
         }
       }
@@ -85,11 +148,10 @@ class OpignoAnswerForm extends ContentEntityForm {
       $form['actions']['submit']['#access'] = FALSE;
     }
 
-    /* @var $answer_service \Drupal\opigno_module\ActivityAnswerManager */
-    $answer_service = \Drupal::service('plugin.manager.activity_answer');
     $answer_activity_type = $activity->getType();
-    if ($answer_service->hasDefinition($answer_activity_type)) {
-      $answer_instance = $answer_service->createInstance($answer_activity_type);
+    if ($this->activityAnswerManager->hasDefinition($answer_activity_type)) {
+      /** @var \Drupal\opigno_module\ActivityAnswerPluginInterface $answer_instance */
+      $answer_instance = $this->activityAnswerManager->createInstance($answer_activity_type);
       $answer_instance->answeringForm($form);
     }
     // Remove 'delete' button.
@@ -102,23 +164,27 @@ class OpignoAnswerForm extends ContentEntityForm {
    * {@inheritdoc}
    */
   public function save(array $form, FormStateInterface $form_state) {
+    /** @var \Drupal\opigno_module\Entity\OpignoAnswerInterface $entity */
     $entity = &$this->entity;
     $activity = $entity->getActivity();
     $module = $entity->getModule();
-    $attempt = $module->getModuleActiveAttempt($this->currentUser());
-    $moduleHandler = \Drupal::service('module_handler');
+    $attempt = $entity->getUserModuleStatus() ?? $module->getModuleActiveAttempt($this->currentUser());
     $activities = $module->getModuleActivities();
+    $answer_activity_type = $activity->getType();
+    $answer_instance = $this->activityAnswerManager->hasDefinition($answer_activity_type)
+      ? $this->activityAnswerManager->createInstance($answer_activity_type)
+      : NULL;
+
+    if ($answer_instance instanceof ActivityAnswerPluginInterface) {
+      $answer_instance->answeringFormSubmit($form, $form_state, $entity);
+    }
 
     if ($attempt !== NULL) {
       $attempt->setLastActivity($activity);
       $entity->setUserModuleStatus($attempt);
       // Check if answer should be evaluated or not.
       // Make it possible to modify answer object before save.
-      /* @var $answer_service \Drupal\opigno_module\ActivityAnswerManager */
-      $answer_service = \Drupal::service('plugin.manager.activity_answer');
-      $answer_activity_type = $activity->getType();
-      if ($answer_service->hasDefinition($answer_activity_type)) {
-        $answer_instance = $answer_service->createInstance($answer_activity_type);
+      if ($answer_instance instanceof ActivityAnswerPluginInterface) {
         // Evaluation status.
         $evaluated_status = $answer_instance->evaluatedOnSave($activity) ? 1 : 0;
         // Answer score.
@@ -129,13 +195,18 @@ class OpignoAnswerForm extends ContentEntityForm {
           $score = $answer_instance->getScore($entity);
         }
 
-        // Calculate score for skills system if activity not included in the current module.
-        // Activity type H5P.
-        if ($moduleHandler->moduleExists('opigno_skills_system') && $module->getSkillsActive() == 1 && $activity->getType() == 'opigno_h5p') {
+        // Calculate score for skills system if activity not included
+        // in the current module. Activity type H5P.
+        if ($this->moduleHandler->moduleExists('opigno_skills_system') &&
+          $module->getSkillsActive() == 1 &&
+          $activity->getType() == 'opigno_h5p'
+        ) {
           $h5p_score = $form_state->getValue('score');
           $percent_score = ($h5p_score / 1.234) - 32.17;
           $score = round($percent_score * 10);
-          if ($score < 0) $score = 0;
+          if ($score < 0) {
+            $score = 0;
+          }
         }
 
         $entity->setScore(round($score));
@@ -144,11 +215,10 @@ class OpignoAnswerForm extends ContentEntityForm {
       if (isset($evaluated_status)) {
         $entity->setEvaluated($evaluated_status);
       }
-      // $entity->save();
       $attempt->save();
     }
 
-    if ($moduleHandler->moduleExists('opigno_skills_system')) {
+    if ($this->moduleHandler->moduleExists('opigno_skills_system')) {
       // Set skill ID.
       $skill_id = $activity->getSkillId();
       if (!empty($skill_id)) {
@@ -170,7 +240,7 @@ class OpignoAnswerForm extends ContentEntityForm {
         break;
 
       default:
-        \Drupal::messenger()->addMessage($this->t('Saved the %label Answer.', [
+        $this->messenger->addMessage($this->t('Saved the %label Answer.', [
           '%label' => $entity->id(),
         ]));
     }
@@ -180,7 +250,7 @@ class OpignoAnswerForm extends ContentEntityForm {
     }
 
     $args = ['opigno_module' => $module->id()];
-    $current_group = \Drupal::routeMatch()->getParameter('group');
+    $current_group = $this->getRouteMatch()->getParameter('group');
     if ($current_group) {
       $args['group'] = $current_group->id();
     }
@@ -192,21 +262,24 @@ class OpignoAnswerForm extends ContentEntityForm {
     $form_state->setRedirect('opigno_module.take_module', $args, ['query' => ['continue' => TRUE]]);
 
     // Calculate skills statistic.
-    if ($moduleHandler->moduleExists('opigno_skills_system') && !empty($skill_level) && !empty($skill_id)) {
-      $db_connection = \Drupal::service('database');
+    if ($this->moduleHandler->moduleExists('opigno_skills_system') && !empty($skill_level) && !empty($skill_id)) {
+      $db_connection = $this->databaseConnection;
       $uid = $this->currentUser()->id();
 
-      $term_storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
+      $term_storage = $this->entityTypeManager->getStorage('taxonomy_term');
       $skill_entity = $term_storage->load($skill_id);
 
       if ($skill_entity != NULL) {
-        $minimum_score = $skill_entity->get('field_minimum_score')->getValue()[0]['value'];
-        $minimum_answers = $skill_entity->get('field_minimum_count_of_answers')->getValue()[0]['value'];
+        $minimum_score = $skill_entity->get('field_minimum_score')
+          ->getValue()[0]['value'];
+        $minimum_answers = $skill_entity->get('field_minimum_count_of_answers')
+          ->getValue()[0]['value'];
 
         $skill_level = $activity->getSkillLevel();
 
         // Get initial level. This is equal to the count of levels.
-        $initial_level = count($skill_entity->get('field_level_names')->getValue());
+        $initial_level = count($skill_entity->get('field_level_names')
+          ->getValue());
         $initial_level = $initial_level === 0 ? 1 : $initial_level;
 
         // Get current user's skills.
@@ -273,15 +346,21 @@ class OpignoAnswerForm extends ContentEntityForm {
             if ($answer->skill_level == $current_stage) {
               $answers[$answer->activity] = $answer;
               $count_answers_for_stage++;
-
+              if (!isset($max_scores[$key])) {
+                $max_scores[$key] = (object) [];
+              }
               if (!isset($max_scores[$key]->max_score)) {
                 $max_scores[$key]->max_score = 10;
               }
-              $avg_score += $answer->score / $max_scores[$key]->max_score;
-
+              if ($max_scores[$key]->max_score > 0) {
+                // If max score is 0, then let's assume than score always 0,
+                // we don't need to calculate avg_score.
+                $avg_score += $answer->score / $max_scores[$key]->max_score;
+              }
               if ($count_answers_for_stage >= $minimum_answers) {
                 $answer_count_for_levels[$current_stage]['access'] = TRUE;
-                $avg_score = round($avg_score / $minimum_answers * 100);
+                // @todo We need avoid division by 0. Refactoring needed.
+                $avg_score = round($avg_score / ($minimum_answers ?: 100) * 100);
                 $answer_count_for_levels[$current_stage]['avg_score'] = $avg_score;
                 if ($current_stage > $stage) {
                   $stage = $current_stage;
@@ -296,15 +375,16 @@ class OpignoAnswerForm extends ContentEntityForm {
 
         // Get average score and current progress of skill.
         $avg_score = 0;
-        $current_progress = 0;
-        $count_of_levels = $initial_level;
-//      $current_progress = round (count($answers) / $minimum_answers / $count_of_levels * 100);
-
         foreach ($answers as $key => $answer) {
+          if (!isset($max_scores[$key])) {
+            $max_scores[$key] = (object) [];
+          }
           if (!isset($max_scores[$key]->max_score)) {
             $max_scores[$key]->max_score = 10;
           }
-          $avg_score += $answer->score / $max_scores[$key]->max_score;
+          if ($max_scores[$key]->max_score > 0) {
+            $avg_score += $answer->score / $max_scores[$key]->max_score;
+          }
         }
 
         $avg_score = round($avg_score / count($answers) * 100);
@@ -330,8 +410,9 @@ class OpignoAnswerForm extends ContentEntityForm {
           $stage = $initial_level;
         }
 
-        // Set current progress
-        $current_progress = 100 - (round($stage / $initial_level * 100));
+        // Set current progress.
+        // @todo We need avoid division by 0. Refactoring needed.
+        $current_progress = 100 - (round($stage / ($initial_level ?: 100) * 100));
 
         $fields = [
           'score' => $avg_score,
@@ -339,7 +420,7 @@ class OpignoAnswerForm extends ContentEntityForm {
           'stage' => $stage,
         ];
 
-        $query = \Drupal::database()
+        $db_connection
           ->merge('opigno_skills_statistic')
           ->keys($keys)
           ->fields($fields)
@@ -347,7 +428,7 @@ class OpignoAnswerForm extends ContentEntityForm {
 
         // Check if user successfully finished skills tree.
         $target_skill = $module->getTargetSkill();
-        $term_storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
+        $term_storage = $this->entityTypeManager->getStorage('taxonomy_term');
         $skills_tree = array_reverse($term_storage->loadTree('skills', $target_skill));
 
         // Get current user's skills.
@@ -361,14 +442,16 @@ class OpignoAnswerForm extends ContentEntityForm {
           ->fetchAllAssoc('tid');
 
         // Set default successfully finished this skills tree for user.
-        // If the system finds any skill which is not successfully finished then change this variable to FALSE.
+        // If the system finds any skill which is not successfully finished
+        // then change this variable to FALSE.
         $successfully_finished = TRUE;
         $sum_score = 0;
 
-        foreach ($skills_tree as $key => $skill) {
-          $term_storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
+        foreach ($skills_tree as $skill) {
+          $term_storage = $this->entityTypeManager->getStorage('taxonomy_term');
           $skill_entity = $term_storage->load($skill->tid);
-          $minimum_score = $skill_entity->get('field_minimum_score')->getValue()[0]['value'];
+          $minimum_score = $skill_entity->get('field_minimum_score')
+            ->getValue()[0]['value'];
 
           if (!isset($user_skills[$skill->tid])) {
             $successfully_finished = FALSE;
@@ -392,14 +475,13 @@ class OpignoAnswerForm extends ContentEntityForm {
         // Search for parent.
         $current_step = [];
         foreach ($steps as $step) {
-          if ($cid = $step['cid']) {
+          if (isset($step['cid']) && !empty($step['cid'])) {
             $current_step = $step;
             break;
           }
         }
 
         $activities_from_module = $module->getModuleActivities();
-        $count_of_activities = count($activities_from_module);
         $activity_ids = array_keys($activities_from_module);
 
         $query = $db_connection->select('opigno_answer_field_data', 'o_a_f_d');
@@ -422,8 +504,13 @@ class OpignoAnswerForm extends ContentEntityForm {
 
         $answers = $query->execute()->fetchAllAssoc('activity');
         $count_of_answers = count($answers);
-        $progress = round($count_of_answers / $count_of_activities * 100);
-
+        // @todo Check why the progress unused variable.
+        //   It was used in the previous version of the code.
+        //
+        // @code
+        // $count_of_activities = count($activities_from_module);
+        // $progress = round($count_of_answers / $count_of_activities * 100);
+        // @endcode
         $activity_ids = array_keys($answers);
         $sum_score = 0;
 
@@ -441,13 +528,19 @@ class OpignoAnswerForm extends ContentEntityForm {
         }
 
         foreach ($answers as $key => $answer) {
+          if (!isset($max_scores[$key])) {
+            $max_scores[$key] = (object) [];
+          }
           if (!isset($max_scores[$key]->max_score)) {
             $max_scores[$key]->max_score = 10;
           }
-          $sum_score += $answer->score / $max_scores[$key]->max_score;
+          if ($max_scores[$key]->max_score > 0) {
+            $sum_score += $answer->score / $max_scores[$key]->max_score;
+          }
         }
 
-        $avg_score = $sum_score / $count_of_answers * 100;
+        // @todo We need avoid division by 0. Refactoring needed.
+        $avg_score = $sum_score / ($count_of_answers ?: 100) * 100;
         $current_step['best score'] = $avg_score;
         $current_step['current attempt score'] = $avg_score;
         $last_activity_id = end($activities)->id;
@@ -466,6 +559,7 @@ class OpignoAnswerForm extends ContentEntityForm {
 
     // Send email to the module managers.
     $this->sendEmailToManager($module, $activity, $entity, $current_group);
+    $entity->save();
   }
 
   /**
@@ -478,7 +572,7 @@ class OpignoAnswerForm extends ContentEntityForm {
       !$learning_path instanceof Group) {
       return;
     }
-    $config = \Drupal::config('opigno_learning_path.learning_path_settings');
+    $config = $this->configFactory()->get('opigno_learning_path.learning_path_settings');
     $student_activity_notify = $config->get('opigno_learning_path_student_does_activity_notify');
     $student_activity = $config->get('opigno_learning_path_student_does_activity');
     if (!$activity->evaluationMethodManual() || empty($student_activity_notify) || empty($student_activity)) {
@@ -486,11 +580,11 @@ class OpignoAnswerForm extends ContentEntityForm {
     }
     // Load managers and send email to each.
     $managers = $learning_path->getMembers('learning_path-user_manager');
-    $student = \Drupal::currentUser();
-    $global_config = \Drupal::config('system.site');
+    $student = $this->currentUser();
+    $global_config = $this->configFactory->get('system.site');
     $options = ['absolute' => TRUE];
     $url = Url::fromRoute('view.opigno_score_modules.opigno_not_evaluated', [], $options);
-    $link = Link::fromTextAndUrl(t('link'), $url)->toString();
+    $link = Link::fromTextAndUrl($this->t('link'), $url)->toString();
 
     foreach ($managers as $manager) {
       $user = $manager->getUser();
@@ -498,21 +592,26 @@ class OpignoAnswerForm extends ContentEntityForm {
       $lang = $user->getPreferredLangcode();
 
       $params = [];
-      $params['subject'] = t('@sitename Module review', ['@sitename' => $global_config->get('name')]);
+      $params['subject'] = $this->t('@sitename Module review', ['@sitename' => $global_config->get('name')]);
       $student_activity = str_replace('[sitename]', $global_config->get('name'), $student_activity);
       $student_activity = str_replace('[user]', $student->getAccountName(), $student_activity);
       $student_activity = str_replace('[manager]', $user->getAccountName(), $student_activity);
       $student_activity = str_replace('[link]', $link, $student_activity);
       $student_activity = str_replace('[module]', $module->getName(), $student_activity);
       $params['message'] = $student_activity;
-      \Drupal::service('plugin.manager.mail')->mail('opigno_learning_path', 'opigno_learning_path_managers_notify', $email, $lang, $params);
+      $this->pluginMailManager->mail('opigno_learning_path', 'opigno_learning_path_managers_notify', $email, $lang, $params);
     }
   }
 
   /**
-   * {@inheritdoc}
+   * The submit callback for the back button.
+   *
+   * @param array $form
+   *   The form.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The form state.
    */
-  public function backwardsNavigation(array $form, FormStateInterface $form_state) {
+  public function backwardsNavigation(array $form, FormStateInterface $form_state): void {
     $entity = &$this->entity;
     $module = $entity->getModule();
     $activity = $entity->getActivity();
@@ -523,23 +622,15 @@ class OpignoAnswerForm extends ContentEntityForm {
       // Set last activity only if current activity is not first.
       $attempt->setLastActivity($activity);
       $attempt->save();
-    };
+    }
 
     $args = ['opigno_module' => $module->id()];
-    $current_group = \Drupal::routeMatch()->getParameter('group');
+    $current_group = $this->getRouteMatch()->getParameter('group');
     if ($current_group) {
       $args['group'] = $current_group->id();
     }
     // Query param is used to detect if we used backwards navigation button.
     $form_state->setRedirect('opigno_module.take_module', $args, ['query' => ['backwards' => TRUE]]);
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public function backToTraining(array $form, FormStateInterface $form_state) {
-    $group = \Drupal::routeMatch()->getParameter('group');
-    $form_state->setRedirect('entity.group.canonical', ['group' => $group->id()]);
   }
 
 }

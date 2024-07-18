@@ -3,9 +3,17 @@
 namespace Drupal\opigno_module\Form;
 
 use Drupal\Core\Entity\ContentEntityForm;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Messenger\Messenger;
+use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\StreamWrapper\StreamWrapperManager;
-use Drupal\file\Entity\File;
+use Drupal\file\FileRepositoryInterface;
+use Drupal\opigno_module\Controller\OpignoModuleController;
+use Drupal\opigno_module\Entity\OpignoModuleInterface;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\HttpFoundation\RequestStack;
 
 /**
  * Form controller for Activity edit forms.
@@ -15,12 +23,96 @@ use Drupal\file\Entity\File;
 class OpignoActivityForm extends ContentEntityForm {
 
   /**
+   * Taxonomy term storage.
+   *
+   * @var \Drupal\taxonomy\TermStorageInterface
+   */
+  protected $termStorage;
+
+  /**
+   * Opigno module storage.
+   *
+   * @var \Drupal\Core\Entity\EntityStorageInterface
+   */
+  protected $moduleStorage;
+
+  /**
+   * The file storage.
+   *
+   * @var \Drupal\file\FileStorageInterface
+   */
+  protected $fileStorage;
+
+  /**
+   * The current request.
+   *
+   * @var \Symfony\Component\HttpFoundation\Request
+   */
+  protected $request;
+
+  /**
+   * The Opigno module service.
+   *
+   * @var \Drupal\opigno_module\Controller\OpignoModuleController
+   */
+  protected $moduleService;
+
+  /**
+   * The file repository service.
+   *
+   * @var \Drupal\file\FileRepositoryInterface
+   */
+  protected $fileRepository;
+
+  /**
+   * {@inheritdoc}
+   */
+  public function __construct(
+    EntityTypeManagerInterface $entity_type_manager,
+    ModuleHandlerInterface $module_handler,
+    RouteMatchInterface $route_match,
+    RequestStack $request_stack,
+    Messenger $messenger,
+    OpignoModuleController $module_service,
+    FileRepositoryInterface $file_repository,
+    ...$default
+  ) {
+    parent::__construct(...$default);
+    $this->entityTypeManager = $entity_type_manager;
+    $this->termStorage = $entity_type_manager->getStorage('taxonomy_term');
+    $this->moduleStorage = $entity_type_manager->getStorage('opigno_module');
+    $this->fileStorage = $entity_type_manager->getStorage('file');
+    $this->moduleHandler = $module_handler;
+    $this->routeMatch = $route_match;
+    $this->request = $request_stack->getCurrentRequest();
+    $this->messenger = $messenger;
+    $this->moduleService = $module_service;
+    $this->fileRepository = $file_repository;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container) {
+    return new static(
+      $container->get('entity_type.manager'),
+      $container->get('module_handler'),
+      $container->get('current_route_match'),
+      $container->get('request_stack'),
+      $container->get('messenger'),
+      $container->get('opigno_module.opigno_module'),
+      $container->get('file.repository'),
+      $container->get('entity.repository'),
+      $container->get('entity_type.bundle.info'),
+      $container->get('datetime.time')
+    );
+  }
+
+  /**
    * {@inheritdoc}
    */
   public function buildForm(array $form, FormStateInterface $form_state) {
-    /* @var $entity \Drupal\opigno_module\Entity\OpignoActivity */
     $form = parent::buildForm($form, $form_state);
-    $term_storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
     $values = $form_state->getValues();
     $auto_skills = FALSE;
 
@@ -28,24 +120,23 @@ class OpignoActivityForm extends ContentEntityForm {
     $form['#prefix'] = '<div id="activity-wrapper">';
     $form['#suffix'] = '</div>';
 
-    $moduleHandler = \Drupal::service('module_handler');
     $is_new = $this->getEntity()->isNew();
     $in_skills_system = FALSE;
 
     $activity = $this->getEntity();
     $skill_id = $activity->getSkillId();
-    $params = \Drupal::routeMatch()->getParameters();
+    $params = $this->routeMatch->getParameters();
 
     // Check if we create/edit activity in the learning path management.
     if (!empty($params->get('opigno_module'))) {
       $module_id = $params->get('opigno_module')->id();
-      $module = \Drupal::entityTypeManager()->getStorage('opigno_module')->load($module_id);
+      $module = $this->moduleStorage->load($module_id);
       $in_skills_system = $module->getSkillsActive();
     }
 
     if ($skill_id) {
       $default_manual = TRUE;
-      $parents = $term_storage->loadAllParents($skill_id);
+      $parents = $this->termStorage->loadAllParents($skill_id);
       $parents_ids = array_keys($parents);
     }
     else {
@@ -54,7 +145,10 @@ class OpignoActivityForm extends ContentEntityForm {
     }
 
     // Hide field 'auto_skills' for all existing activities.
-    if (!$is_new || !$moduleHandler->moduleExists('opigno_skills_system') || (isset($module) && !$in_skills_system)) {
+    if (!$is_new
+      || !$this->moduleHandler->moduleExists('opigno_skills_system')
+      || (isset($module) && !$in_skills_system)
+    ) {
       $form['auto_skills']['#access'] = FALSE;
       $auto_skills = $this->getEntity()->get('auto_skills')->getValue()[0]['value'];
     }
@@ -80,9 +174,9 @@ class OpignoActivityForm extends ContentEntityForm {
       $auto_skills = $values['auto_skills']['value'];
     }
 
-    // Add 'manual skills management' for activities which is not in the skills system.
-    if ((!isset($module_id) || !$module->getSkillsActive())
-        && ($is_new || !$auto_skills)) {
+    // Add 'manual skills management' for activities which is not in the skills
+    // system.
+    if ((!isset($module_id) || !$module->getSkillsActive()) && ($is_new || !$auto_skills)) {
       $form['manual_skills_management'] = [
         '#type' => 'checkbox',
         '#title' => $this->t('Assign a skill to this activity'),
@@ -93,12 +187,12 @@ class OpignoActivityForm extends ContentEntityForm {
           'effect' => 'fade',
           'callback' => '::autoSkillsAjax',
           'wrapper' => 'activity-wrapper',
-        ]
+        ],
       ];
     }
 
     // Get list of skills trees.
-    $target_skills = $term_storage->loadTree('skills', 0, 1);
+    $target_skills = $this->termStorage->loadTree('skills', 0, 1);
     $default_target_skill = FALSE;
     $options = [];
 
@@ -107,7 +201,7 @@ class OpignoActivityForm extends ContentEntityForm {
     }
 
     foreach ($target_skills as $row) {
-      $options [$row->tid] = $row->name;
+      $options[$row->tid] = $row->name;
       if (in_array($row->tid, $parents_ids)) {
         $default_target_skill = $row->tid;
       }
@@ -122,17 +216,13 @@ class OpignoActivityForm extends ContentEntityForm {
         '#title' => $this->t('Choose skills tree'),
         '#options' => $options,
         '#weight' => 1,
-        '#default_value' => $default_target_skill,
+        '#default_value' => $default_target_skill ?? '_none',
         '#ajax' => [
           'event' => 'change',
           'callback' => '::autoSkillsAjax',
           'wrapper' => 'activity-wrapper',
         ],
       ];
-
-      if ($default_target_skill) {
-        $form['manual_management_tree']['#default_value'] = $default_target_skill;
-      }
     }
 
     $form['skills_list']['widget']['#ajax'] = [
@@ -144,15 +234,12 @@ class OpignoActivityForm extends ContentEntityForm {
     $target_skill = $form_state->getValue('manual_management_tree');
 
     // Get list of skills.
-    if (!empty($target_skill)) {
-      $form['skills_list']['widget']['#options'] = $this->_getSkillsFromTree($target_skill, $form['skills_list']['widget']['#options']);
-    }
-    else {
-      $form['skills_list']['widget']['#options'] = $this->_getSkillsFromTree($default_target_skill, $form['skills_list']['widget']['#options']);
-    }
+    $form['skills_list']['widget']['#options'] = !empty($target_skill)
+      ? $this->getSkillsFromTree($target_skill)
+      : $this->getSkillsFromTree($default_target_skill);
 
     if (isset($values['skills_list'][0])) {
-      $selected_skill = $term_storage->load($values['skills_list'][0]['target_id']);
+      $selected_skill = $this->termStorage->load($values['skills_list'][0]['target_id']);
 
       $form['skill_level']['widget']['#default_value'][0] = '0';
       $default_skill_level = $values['skill_level'];
@@ -160,7 +247,7 @@ class OpignoActivityForm extends ContentEntityForm {
       $form_state->setValue('skill_level', $default_skill_level);
     }
     elseif (isset($form['skills_list']['widget']['#default_value'][0])) {
-      $selected_skill = $term_storage->load($form['skills_list']['widget']['#default_value'][0]);
+      $selected_skill = $this->termStorage->load($form['skills_list']['widget']['#default_value'][0]);
     }
 
     // Remove default options for skill levels except first option.
@@ -196,12 +283,19 @@ class OpignoActivityForm extends ContentEntityForm {
     elseif ($auto_skills && $is_new) {
       $form['manual_skills_management']['#access'] = FALSE;
     }
-    elseif ((isset($values['manual_skills_management']) || $values['manual_skills_management'] == 1)) {
+    elseif (isset($values['manual_skills_management']) && $values['manual_skills_management'] == 1) {
       $form['usage_activity']['#access'] = FALSE;
     }
 
-    // Disable revision message.
-    // $form['revision_log_message']['#access'] = FALSE;
+    if ($activity->getType() == 'opigno_h5p') {
+      $form['actions']['submit']['#states'] = [
+        'disabled' => [
+          ':input[name="name[0][value]"]' => ['empty' => TRUE],
+        ],
+      ];
+
+      $form['#attached']['library'][] = 'opigno_module/activity_validate';
+    }
 
     return $form;
   }
@@ -209,25 +303,15 @@ class OpignoActivityForm extends ContentEntityForm {
   /**
    * Get needed skills by target skill.
    */
-  public function _getSkillsFromTree($target_skill, array  $term_options) {
-    $term_storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
-    $skills_from_tree = $term_storage->loadTree('skills',$target_skill);
-    $options = [];
+  public function getSkillsFromTree($target_skill) {
+    $skills_from_tree = $this->termStorage->loadTree('skills', $target_skill);
+    $options = ['_none' => $this->t('- None -')];
 
     foreach ($skills_from_tree as $row) {
       $options[$row->tid] = $row->name;
     }
 
-    foreach ($term_options as $key => $option) {
-      if (array_key_exists($key, $options)) {
-        $term_options[$key] = $options[$key];
-      }
-      elseif ($key != '_none') {
-        unset ($term_options[$key]);
-      }
-    }
-
-    return $term_options;
+    return $options;
   }
 
   /**
@@ -243,7 +327,7 @@ class OpignoActivityForm extends ContentEntityForm {
   public function save(array $form, FormStateInterface $form_state) {
     $activity = &$this->entity;
     // Get URL parameters.
-    $params = \Drupal::request()->query->all();
+    $params = $this->request->query->all();
 
     // Save Activity entity.
     $status = parent::save($form, $form_state);
@@ -263,27 +347,25 @@ class OpignoActivityForm extends ContentEntityForm {
     // Update video filename.
     if (!empty($values['field_video'][0]['fids'])) {
       $fid = $values['field_video'][0]['fids'][0];
-      $file = File::load($fid);
+      $file = $this->fileStorage->load($fid);
       $this->renameFile($file);
     }
 
-    switch ($status) {
-      case SAVED_NEW:
-        if (isset($params['module_id']) && !empty($params['module_id'] && $params['module_vid'])) {
-          $opigno_module = \Drupal::entityTypeManager()->getStorage('opigno_module')->load($params['module_id']);
-          $opigno_module_obj = \Drupal::service('opigno_module.opigno_module');
-          $opigno_module_obj->activitiesToModule([$activity], $opigno_module);
+    if ($status == SAVED_NEW) {
+      if (isset($params['module_id']) && !empty($params['module_id'] && $params['module_vid'])) {
+        $opigno_module = $this->moduleStorage->load($params['module_id']);
+        if ($opigno_module instanceof OpignoModuleInterface) {
+          $this->moduleService->activitiesToModule([$activity], $opigno_module);
         }
-        \Drupal::messenger()->addMessage($this->t('Created the %label Activity.', [
-          '%label' => $activity->label(),
-        ]));
-
-        break;
-
-      default:
-        \Drupal::messenger()->addMessage($this->t('Saved the %label Activity.', [
-          '%label' => $activity->label(),
-        ]));
+      }
+      $this->messenger->addMessage($this->t('Created the %label Activity.', [
+        '%label' => $activity->label(),
+      ]));
+    }
+    else {
+      $this->messenger->addMessage($this->t('Saved the %label Activity.', [
+        '%label' => $activity->label(),
+      ]));
     }
     $form_state->setRedirect('entity.opigno_activity.canonical', ['opigno_activity' => $activity->id()]);
   }
@@ -293,14 +375,23 @@ class OpignoActivityForm extends ContentEntityForm {
    */
   public function validateForm(array &$form, FormStateInterface $form_state) {
     parent::validateForm($form, $form_state);
-
-    $moduleHandler = \Drupal::service('module_handler');
     $values = $form_state->getValues();
 
-    if ($moduleHandler->moduleExists('opigno_skills_system')
+    if (empty($values['name'][0]['value'])) {
+      $this->messenger()->addError($this->t('The name field should be set.'));
+      $form_state->setError($form['name'], $this->t('The name field is required.'));
+    }
+
+    if ($this->moduleHandler->moduleExists('opigno_skills_system')
         && isset($values['manual_skill_management']) && $values['manual_skill_management'] == FALSE) {
       unset($values['skills_list'][0]);
       unset($values['skill_level'][0]);
+      $form_state->setValues($values);
+    }
+
+    if (!isset($values['uid'][0]['target_id'])) {
+      // If the author doesn't exist.
+      $values['uid'][0]['target_id'] = 0;
       $form_state->setValues($values);
     }
   }
@@ -315,7 +406,7 @@ class OpignoActivityForm extends ContentEntityForm {
       $filename_new = preg_replace('/[^a-zA-Z0-9-_\.]/', '-', $filename);
       $file->setFilename($filename_new);
       $file->save();
-      \Drupal::service('file.repository')->move($file, $stream_wrapper . '://' . $filename_new);
+      $this->fileRepository->move($file, $stream_wrapper . '://' . $filename_new);
     }
   }
 

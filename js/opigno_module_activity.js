@@ -5,12 +5,12 @@
       var fullScreen = {
         show: function () {
           $('body').addClass('fullscreen');
-          Cookies.set('fullscreen', 1);
+          // Cookies.set('fullscreen', 1);
           that.goInFullscreen(document.querySelector('html'));
         },
         hide: function () {
           $('body').removeClass('fullscreen');
-          Cookies.set('fullscreen', 0);
+          // Cookies.set('fullscreen', 0);
           that.goOutFullscreen();
         }
       };

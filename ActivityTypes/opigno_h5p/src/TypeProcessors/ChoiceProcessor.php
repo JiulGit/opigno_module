@@ -12,11 +12,15 @@ use Drupal\opigno_h5p\H5PReport;
 class ChoiceProcessor extends TypeProcessor {
 
   /**
-   * Determines options for interaction, generates a human readable HTML report.
-   *
-   * @inheritdoc
+   * {@inheritdoc}
    */
-  public function generateHTML($description, $crp, $response, $extras = NULL, $scoreSettings = NULL) {
+  public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras = NULL,
+    ?object $scoreSettings = NULL
+  ): string {
     if ($this->isLongChoice($extras)) {
       return H5PReport::getInstance()->generateReport(
         $this->xapiData,
@@ -38,9 +42,8 @@ class ChoiceProcessor extends TypeProcessor {
     $headerHtml = $this->generateHeader($description, $scoreSettings);
     $tableHTML = $this->generateTable($extras, $correctAnswers, $responses);
 
-    return
-      '<div class="h5p-reporting-container h5p-choices-container">' .
-        $headerHtml . $tableHTML .
+    return '<div class="h5p-reporting-container h5p-choices-container">' .
+      $headerHtml . $tableHTML .
       '</div>';
   }
 
@@ -51,9 +54,8 @@ class ChoiceProcessor extends TypeProcessor {
     $descriptionHtml = $this->generateDescription($description);
     $scoreHtml = $this->generateScoreHtml($scoreSettings);
 
-    return
-      "<div class='h5p-choices-header'>" .
-        $descriptionHtml . $scoreHtml .
+    return "<div class='h5p-choices-header'>" .
+      $descriptionHtml . $scoreHtml .
       "</div>";
   }
 
@@ -73,10 +75,9 @@ class ChoiceProcessor extends TypeProcessor {
 
     $choices = $extras->choices;
     $tableHeader =
-      '<tr class="h5p-choices-table-heading">' .
-        '<td class="h5p-choices-choice">'.t('Answers').'</td>' .
-        '<td class="h5p-choices-user-answer">'.t('Your Answer').'</td>' .
-        '<td class="h5p-choices-crp-answer">'.t('Correct').'</td></tr>';
+      '<tr class="h5p-choices-table-heading"><td class="h5p-choices-choice">' . $this->t('Answers') . '</td>' .
+      '<td class="h5p-choices-user-answer">' . $this->t('Your Answer') . '</td>' .
+      '<td class="h5p-choices-crp-answer">' . $this->t('Correct') . '</td></tr>';
 
     $rows = '';
     foreach ($choices as $choice) {
@@ -111,7 +112,7 @@ class ChoiceProcessor extends TypeProcessor {
    * Determine if choice is a long choice interaction type.
    */
   private function isLongChoice($extras) {
-    $extensions = isset($extras->extensions) ? $extras->extensions : (object) [];
+    $extensions = $extras->extensions ?? (object) [];
 
     // Determine if line-breaks extension exists.
     return isset($extensions->{'https://h5p.org/x-api/line-breaks'});

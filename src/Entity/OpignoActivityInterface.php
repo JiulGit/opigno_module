@@ -91,10 +91,28 @@ interface OpignoActivityInterface extends ContentEntityInterface, EntityChangedI
   /**
    * Gets a list of Answer revision IDs for a specific Answer.
    *
-   *
    * @return int[]
    *   Activity revision IDs (in ascending order).
    */
-  public function revisionIds();
+  public function revisionIds(): array;
+
+  /**
+   * Get list of activity modules.
+   *
+   * @return array
+   *   The list of modules activity is assigned to.
+   *
+   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+   */
+  public function getModules(): array;
+
+  /**
+   * Get if evaluation Method Manual.
+   *
+   * @return bool
+   *   TRUE if the evaluation method is "manual", FALSE otherwise.
+   */
+  public function evaluationMethodManual(): bool;
 
 }

@@ -10,6 +10,7 @@ use Drupal\Core\Link;
 use Drupal\Core\Render\Markup;
 use Drupal\Core\Url;
 use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\opigno_tincan_activity\TincanService;
 
 /**
  * Implements hook_file_delete().
@@ -17,8 +18,8 @@ use Drupal\Core\Routing\RouteMatchInterface;
 function opigno_tincan_activity_file_delete($file) {
   // Delete the extracted files that are in the extracted folder.
   $tincan_content_service = \Drupal::service('opigno_tincan_activity.tincan');
-  $len = strlen($tincan_content_service->PATH_PUBLIC_PACKAGE_FOLDER);
-  if (substr($file->getFileUri(), 0, $len) === $tincan_content_service->PATH_PUBLIC_PACKAGE_FOLDER) {
+  $len = strlen(TincanService::PATH_PUBLIC_PACKAGE_FOLDER);
+  if (substr($file->getFileUri(), 0, $len) === TincanService::PATH_PUBLIC_PACKAGE_FOLDER) {
     \Drupal::service('file_system')->deleteRecursive($tincan_content_service->getExtractPath($file));
   }
 }
@@ -66,8 +67,8 @@ function opigno_tincan_activity_help($route_name, RouteMatchInterface $route_mat
     case 'help.page.opigno_tincan_activity':
       // --- The ABOUT section.
       $output = '<h3>' . t('About') . '</h3>';
-      $output .= '<p>' . t('The Opigno TinCan Activity module adds a new activity type. 
-    With this new activity type, you will be able to upload an TinCan Package 
+      $output .= '<p>' . t('The Opigno TinCan Activity module adds a new activity type.
+    With this new activity type, you will be able to upload an TinCan Package
     and use it as an activity inside a module.') . '</p>';
 
       // --- The USES section.

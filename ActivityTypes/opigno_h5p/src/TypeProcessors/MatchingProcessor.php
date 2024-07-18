@@ -3,7 +3,9 @@
 namespace Drupal\opigno_h5p\TypeProcessors;
 
 /**
- * Class MatchingProcessor.
+ * Defines the H5P MatchingProcessor.
+ *
+ * @package Drupal\opigno_h5p\TypeProcessors
  */
 class MatchingProcessor extends TypeProcessor {
 
@@ -18,22 +20,26 @@ class MatchingProcessor extends TypeProcessor {
   const MATCH_SEPARATOR = '[.]';
 
   /**
-   * Processes xAPI data and returns a human readable HTML report.
-   *
-   * @inheritdoc
+   * {@inheritdoc}
    */
-  public function generateHTML($description, $crp, $response, $extras = NULL, $scoreSettings = NULL) {
+  public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras = NULL,
+    ?object $scoreSettings = NULL
+  ): string {
     // We need some style for our report.
     $this->setStyle('opigno_h5p/opigno_h5p.matching');
 
     $dropzones = $this->getDropzones($extras);
     $draggables = $this->getDraggables($extras);
 
-    $mappedCRP = $this->mapPatternIDsToIndexes($crp[0],
+    $mappedCRP = $this->mapPatternIdsToIndexes($crp[0],
       $dropzones,
       $draggables);
 
-    $mappedResponse = $this->mapPatternIDsToIndexes($response,
+    $mappedResponse = $this->mapPatternIdsToIndexes($response,
       $dropzones,
       $draggables);
 
@@ -47,11 +53,10 @@ class MatchingProcessor extends TypeProcessor {
       $dropzones,
       $draggables
     );
-    $container = '<div class="h5p-reporting-container h5p-matching-container">' .
-                   $header . $tableHTML .
-                 '</div>';
 
-    return $container;
+    return '<div class="h5p-reporting-container h5p-matching-container">' .
+      $header . $tableHTML .
+      '</div>';
   }
 
   /**
@@ -61,9 +66,8 @@ class MatchingProcessor extends TypeProcessor {
     $descriptionHtml = $this->generateDescription($description);
     $scoreHtml = $this->generateScoreHtml($scoreSettings);
 
-    return
-      "<div class='h5p-matching-header'>" .
-        $descriptionHtml . $scoreHtml .
+    return "<div class='h5p-matching-header'>" .
+      $descriptionHtml . $scoreHtml .
       "</div>";
   }
 
@@ -71,9 +75,8 @@ class MatchingProcessor extends TypeProcessor {
    * Generate description element.
    */
   private function generateDescription($description) {
-    return
-      '<p class="h5p-reporting-description h5p-matching-task-description">' .
-        $description .
+    return '<p class="h5p-reporting-description h5p-matching-task-description">' .
+      $description .
       '</p>';
   }
 
@@ -90,7 +93,7 @@ class MatchingProcessor extends TypeProcessor {
    * @return array
    *   Pattern mapped to indexes instead of IDs.
    */
-  public function mapPatternIDsToIndexes($pattern, array $dropzoneIds, array $draggableIds) {
+  public function mapPatternIdsToIndexes($pattern, array $dropzoneIds, array $draggableIds) {
     $mappedMatches = [];
     if (empty($pattern)) {
       return $mappedMatches;
@@ -140,8 +143,8 @@ class MatchingProcessor extends TypeProcessor {
     foreach ($dropzones as $index => $value) {
       $html .= $this->generateDropzoneRows($value,
         $draggables,
-        isset($mappedCRP[$index]) ? $mappedCRP[$index] : [],
-        isset($mappedResponse[$index]) ? $mappedResponse[$index] : []
+        $mappedCRP[$index] ?? [],
+        $mappedResponse[$index] ?? []
       );
     }
     return $html;

@@ -8,7 +8,7 @@ dependencies:
   - h5p:h5p
   - h5p:h5peditor
 
-# Information added by Drupal.org packaging script on 2022-11-13
-version: '3.0.4'
+# Information added by Drupal.org packaging script on 2023-06-02
+version: '3.1.1'
 project: 'opigno_module'
-datestamp: 1668362227
+datestamp: 1685711919

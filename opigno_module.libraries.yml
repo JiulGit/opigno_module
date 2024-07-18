@@ -14,6 +14,17 @@ activity:
     - core/drupalSettings
     - core/js-cookie
 
+activity_validate:
+  version: VERSION
+  js:
+    js/activity_validate.js: {}
+  dependencies:
+    - core/drupal
+    - core/jquery
+  css:
+    theme:
+      css/activity_validate.css: {}
+
 module_results_form:
   version: VERSION
   css:

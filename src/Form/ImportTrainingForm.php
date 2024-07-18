@@ -2,8 +2,6 @@
 
 namespace Drupal\opigno_module\Form;
 
-use Drupal\Core\Database\Connection;
-use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Link;
 use Drupal\Core\File\FileSystemInterface;
@@ -15,54 +13,33 @@ use Drupal\h5peditor\H5PEditor\H5PEditorUtilities;
 use Drupal\media\Entity\Media;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedContent;
 use Drupal\opigno_group_manager\Entity\OpignoGroupManagedLink;
+use Drupal\opigno_module\Controller\OpignoModuleController;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\Entity\OpignoModule;
 use Drupal\opigno_module\H5PImportClasses\H5PEditorAjaxImport;
 use Drupal\opigno_module\H5PImportClasses\H5PStorageImport;
 use Drupal\taxonomy\Entity\Term;
 use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
 
 /**
  * Import Course form.
  */
-class ImportTrainingForm extends FormBase {
+class ImportTrainingForm extends ImportBaseForm {
 
   /**
-   * Temporary  folder.
-   */
-  protected $tmp = 'public://opigno-import';
-
-  /**
-   * Path to temporary folder.
-   */
-  protected $folder = DRUPAL_ROOT . '/sites/default/files/opigno-import';
-
-
-  /**
-   * File System service.
+   * The Opigno module service.
    *
-   * @var \Drupal\Core\File\FileSystemInterface
+   * @var \Drupal\opigno_module\Controller\OpignoModuleController
    */
-  protected $fileSystem;
+  protected $moduleService;
 
   /**
-   * Database connection.
-   *
-   * @var \Drupal\Core\Database\Connection
+   * {@inheritdoc}
    */
-  protected $database;
-
-
-
-  /**
-   * Constructs a new CommerceBundleEntityFormBase object.
-   *
-   * @param \Drupal\commerce\EntityTraitManagerInterface $trait_manager
-   *   The entity trait manager.
-   */
-  public function __construct(FileSystemInterface $file_system, Connection $database) {
-    $this->fileSystem = $file_system;
-    $this->database = $database;
+  public function __construct(OpignoModuleController $module_service, ...$default) {
+    parent::__construct(...$default);
+    $this->moduleService = $module_service;
   }
 
   /**
@@ -70,8 +47,13 @@ class ImportTrainingForm extends FormBase {
    */
   public static function create(ContainerInterface $container) {
     return new static(
+      $container->get('opigno_module.opigno_module'),
       $container->get('file_system'),
-      $container->get('database')
+      $container->get('datetime.time'),
+      $container->get('database'),
+      $container->get('serializer'),
+      $container->get('config.factory'),
+      $container->get('messenger')
     );
   }
 
@@ -110,7 +92,10 @@ class ImportTrainingForm extends FormBase {
    */
   public function validateForm(array &$form, FormStateInterface $form_state) {
     // Validation is optional.
-    if (empty($_FILES['files']['name']['training_opi'])) {
+    $files = $this->getRequest()->files->get('files', []);
+    $uploaded = $files['training_opi'] ?? NULL;
+
+    if (!$uploaded instanceof UploadedFile || !$uploaded->getClientOriginalName()) {
       // Only need to validate if the field actually has a file.
       $form_state->setError(
         $form['training_opi'],
@@ -123,7 +108,11 @@ class ImportTrainingForm extends FormBase {
    * {@inheritdoc}
    */
   public function submitForm(array &$form, FormStateInterface $form_state) {
-    $this->prepareTemporary();
+    // Prepare folder.
+    if (!$this->prepareTemporary()) {
+      $this->messenger()->addMessage($this->t('Failed to create directory.'), 'error');
+      return;
+    }
     $files = $this->getImportFiles();
 
     if (in_array('list_of_files.json', $files)) {
@@ -133,25 +122,24 @@ class ImportTrainingForm extends FormBase {
 
       $format = 'json';
       $ids = [];
-      $serializer = \Drupal::service('serializer');
-      $content = $serializer->decode($file, $format);
+      $content = $this->serializer->decode($file, $format);
       $prev_id = 0;
 
       $file_path = $this->tmp . '/' . $content['training'];
       $real_path = $this->fileSystem->realpath($file_path);
       $file = file_get_contents($real_path);
-      $training_content_array = $serializer->decode($file, $format);
+      $training_content_array = $this->serializer->decode($file, $format);
       $training_content = reset($training_content_array);
       $new_training = $this->importTraining($training_content);
 
       $ids['training'][$training_content['id'][0]['value']] = $new_training->id();
 
       if (!empty($content['courses'])) {
-        foreach ($content['courses'] as $course_name => $course_path) {
+        foreach ($content['courses'] as $course_path) {
           $file_path = $this->tmp . '/' . $course_path;
           $real_path = $this->fileSystem->realpath($file_path);
           $file = file_get_contents($real_path);
-          $course_content_array = $serializer->decode($file, $format);
+          $course_content_array = $this->serializer->decode($file, $format);
           $course_content = reset($course_content_array);
 
           $new_course = $this->importCourse($course_content);
@@ -182,7 +170,7 @@ class ImportTrainingForm extends FormBase {
           $file_path = $this->tmp . '/' . $module_path;
           $real_path = $this->fileSystem->realpath($file_path);
           $file = file_get_contents($real_path);
-          $module_content_array = $serializer->decode($file, $format);
+          $module_content_array = $this->serializer->decode($file, $format);
           $module_content = reset($module_content_array);
 
           $new_module = $this->importModule($module_content);
@@ -197,7 +185,8 @@ class ImportTrainingForm extends FormBase {
             $parent_group_id = $ids['course'][$module_content['course_rel']];
             $course = Group::load($parent_group_id);
             $course->addContent($new_module, 'opigno_module_group');
-          } else {
+          }
+          else {
             $new_training->addContent($new_module, 'opigno_module_group');
           }
 
@@ -218,16 +207,15 @@ class ImportTrainingForm extends FormBase {
             $file_path = $this->tmp . '/' . $activity_file_name;
             $real_path = $this->fileSystem->realpath($file_path);
             $file = file_get_contents($real_path);
-            $activity_content_array = $serializer->decode($file, $format);
+            $activity_content_array = $this->serializer->decode($file, $format);
             $activity_content = reset($activity_content_array);
 
             $new_activity = $this->importActivity($activity_content);
 
             $ids['activities'][$activity_content['id'][0]['value']] = $new_activity->id();
 
-            $opigno_module_obj = \Drupal::service('opigno_module.opigno_module');
-            $max_score = isset($activity_content['max_score']) ? $activity_content['max_score'] : 10;
-            $opigno_module_obj->activitiesToModule([$new_activity], $new_module, NULL, $max_score);
+            $max_score = $activity_content['max_score'] ?? 10;
+            $this->moduleService->activitiesToModule([$new_activity], $new_module, NULL, $max_score);
           }
 
           foreach ($parent_links as $link) {
@@ -238,7 +226,8 @@ class ImportTrainingForm extends FormBase {
               }
 
               $link['required_activities'] = serialize($link['required_activities']);
-            } else {
+            }
+            else {
               $link['required_activities'] = NULL;
             }
 
@@ -266,11 +255,11 @@ class ImportTrainingForm extends FormBase {
 
       // Set links for courses.
       if (!empty($content['courses'])) {
-        foreach ($content['courses'] as $course_name => $course_path) {
+        foreach ($content['courses'] as $course_path) {
           $file_path = $this->tmp . '/' . $course_path;
           $real_path = $this->fileSystem->realpath($file_path);
           $file = file_get_contents($real_path);
-          $course_content_array = $serializer->decode($file, $format);
+          $course_content_array = $this->serializer->decode($file, $format);
           $course_content = reset($course_content_array);
           $parent_links = $course_content['parent_links'];
 
@@ -303,7 +292,7 @@ class ImportTrainingForm extends FormBase {
           $file_path = $this->tmp . '/library/' . $term_file_name;
           $real_path = $this->fileSystem->realpath($file_path);
           $file = file_get_contents($real_path);
-          $term_content = $serializer->decode($file, $format);
+          $term_content = $this->serializer->decode($file, $format);
 
           $parent_id = $tids_relationships[$term_content['parent'][0]['target_id']];
 
@@ -325,9 +314,9 @@ class ImportTrainingForm extends FormBase {
           $file_path = $this->tmp . '/library/' . $document['file'];
           $real_path = $this->fileSystem->realpath($file_path);
           $file = file_get_contents($real_path);
-          $file_content = $serializer->decode($file, $format);
+          $file_content = $this->serializer->decode($file, $format);
 
-          $current_timestamp = \Drupal::time()->getCurrentTime();
+          $current_timestamp = $this->time->getCurrentTime();
           $date = date('Y-m', $current_timestamp);
           $file_source = $this->tmp . '/library/' . $file_content['fid'][0]['value'] . '-' . $file_content['filename'][0]['value'];
           $dest_folder = 'public://' . $date;
@@ -336,12 +325,11 @@ class ImportTrainingForm extends FormBase {
           $uri = $this->copyFile($file_source, $destination, $dest_folder);
 
           if (!empty($uri)) {
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
-              'status' => $file_content['status'][0]['value'],
+              'status' => is_array($file_content['status']) ? $file_content['status'][0]['value'] : $file_content['status'],
             ]);
-
 
             $file->save();
             $fid = $file->id();
@@ -349,7 +337,7 @@ class ImportTrainingForm extends FormBase {
             $file_path = $this->tmp . '/library/' . $document['media'];
             $real_path = $this->fileSystem->realpath($file_path);
             $file = file_get_contents($real_path);
-            $file_content = $serializer->decode($file, $format);
+            $file_content = $this->serializer->decode($file, $format);
           }
 
           if (!empty($file_content['file_name'])) {
@@ -373,12 +361,39 @@ class ImportTrainingForm extends FormBase {
         'group' => $new_training->id(),
       ];
 
-      \Drupal::messenger()->addMessage(t('Imported training %training', [
-        '%training' => Link::createFromRoute($new_training->label(), 'entity.group.canonical', $route_parameters)->toString()
+      $this->messenger->addMessage($this->t('Imported training %training', [
+        '%training' => Link::createFromRoute(
+          $new_training->label(),
+          'entity.group.canonical',
+          $route_parameters
+        )->toString(),
       ]));
 
       $form_state->setRedirect('entity.group.collection');
     }
+  }
+
+  /**
+   * Checks that the directory exists and is writable.
+   *
+   * Public directories will be protected by adding an .htaccess.
+   *
+   * @param string $directory
+   *   A string reference containing the name of a directory path or URI.
+   *
+   * @return bool
+   *   TRUE if the directory exists (or was created), is writable and is
+   *   protected (if it is public). FALSE otherwise.
+   */
+  protected function prepareDirectory(string $directory): bool {
+    if (!$this->fileSystem->prepareDirectory($directory, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY)) {
+      return FALSE;
+    }
+    if (0 === strpos($directory, 'public://')) {
+      return static::writeHtaccess($directory);
+    }
+
+    return TRUE;
   }
 
   /**
@@ -387,7 +402,7 @@ class ImportTrainingForm extends FormBase {
   protected function prepareTemporary() {
     // Prepare folder.
     $this->fileSystem->deleteRecursive($this->tmp);
-    $this->fileSystem->prepareDirectory($this->tmp, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
+    return $this->prepareDirectory($this->tmp);
   }
 
   /**
@@ -408,11 +423,12 @@ class ImportTrainingForm extends FormBase {
       $zip = new \ZipArchive();
       $result = $zip->open($path);
 
-      if ($zip->locateName('.htaccess') !== false) {
-        \Drupal::messenger()->addMessage(t('Unsafe files detected.'), 'error');
+      if (!static::validate($zip)) {
+        $this->messenger->addError($this->t('Unsafe files detected.'));
         $zip->close();
         $this->fileSystem->delete($path);
-        \Drupal::service('file_system')->deleteRecursive($this->tmp);
+        $this->fileSystem->deleteRecursive($this->tmp);
+
         return [];
       }
 
@@ -433,11 +449,12 @@ class ImportTrainingForm extends FormBase {
    * @param array $training_content
    *   List of settings from imported file.
    *
-   * @return Group
+   * @return \Drupal\group\Entity\Group
+   *   A group entity.
    *
    * @throws \Exception
    */
-  protected function importTraining($training_content) {
+  protected function importTraining(array $training_content): Group {
     $training = $this->buildEntityOptions($training_content, 'learning_path');
     $new_training = Group::create($training);
 
@@ -463,23 +480,24 @@ class ImportTrainingForm extends FormBase {
    * @param array $training_content
    *   List of settings from imported file.
    *
-   * @return Drupal\media\Entity\Media|Bool
+   * @return \Drupal\media\Entity\Media|bool
+   *   The created training image.
    *
    * @throws \Exception
    */
-  protected function importTrainingImage($training_content) {
+  protected function importTrainingImage(array $training_content) {
     if (!empty($training_content['field_learning_path_media_image']['media'])) {
       $file_info = $training_content['field_learning_path_media_image'];
       $media_image = $file_info['media'];
 
       $slide_file_path = $this->tmp . '/' . $file_info['media'][0]['target_id'] . '-' . $file_info['file_name'];
-      $current_timestamp = \Drupal::time()->getCurrentTime();
+      $current_timestamp = $this->time->getCurrentTime();
       $date = date('Y-m', $current_timestamp);
 
       // Save image file.
       $uri = $this->copyFile($slide_file_path, 'public://' . $date . '/' . $file_info['file_name'], 'public://' . $date);
       if (!empty($uri)) {
-        $file = File::Create([
+        $file = File::create([
           'uri' => $uri,
           'uid' => $this->currentUser()->id(),
           'status' => !empty($file_info['status']) ? $file_info['status'] : 1,
@@ -498,7 +516,6 @@ class ImportTrainingForm extends FormBase {
 
         $media->save();
 
-
         return $media;
       }
     }
@@ -512,11 +529,12 @@ class ImportTrainingForm extends FormBase {
    * @param array $course_content
    *   List of settings from imported file.
    *
-   * @return Group
+   * @return \Drupal\group\Entity\Group
+   *   A group entity.
    *
    * @throws \Exception
    */
-  protected function importCourse($course_content) {
+  protected function importCourse(array $course_content): Group {
     $course = $this->buildEntityOptions($course_content, 'opigno_course');
     $new_course = Group::create($course);
 
@@ -535,11 +553,12 @@ class ImportTrainingForm extends FormBase {
    * @param array $module_content
    *   List of settings from imported file.
    *
-   * @return OpignoModule
+   * @return \Drupal\opigno_module\Entity\OpignoModule
+   *   The imported module.
    *
    * @throws \Exception
    */
-  protected function importModule($module_content) {
+  protected function importModule(array $module_content): OpignoModule {
     $module = $this->buildEntityOptions($module_content, 'opigno_module');
     $new_module = OpignoModule::create($module);
 
@@ -559,11 +578,13 @@ class ImportTrainingForm extends FormBase {
    *   List of values from imported file.
    * @param string $type
    *   Type of entity.
+   *
    * @return array
+   *   The array of settings to create an entity.
    */
-  protected function buildEntityOptions($source, $type) {
+  protected function buildEntityOptions(array $source, string $type): array {
     $build = ['type' => $type];
-    $fields = $this->fieldColections($type);
+    $fields = $this->fieldCollections($type);
     foreach ($fields as $field) {
       if (!empty($source[$field][0]['value'])) {
         $build[$field] = $source[$field][0]['value'];
@@ -576,17 +597,16 @@ class ImportTrainingForm extends FormBase {
   /**
    * Build Array of settings to create entity.
    *
-   * @param OpignoActivity $activity
+   * @param \Drupal\opigno_module\Entity\OpignoActivity $activity
    *   OpignoActivity entity.
-   * @param OpignoModule $module
+   * @param \Drupal\opigno_module\Entity\OpignoModule $module
    *   OpignoModule entity.
    * @param array $activity_content
    *   List of values from imported file.
    */
-  protected function setMaxScore($activity, $module, $activity_content) {
+  protected function setMaxScore(OpignoActivity $activity, OpignoModule $module, array $activity_content): void {
     // Set max score.
     if (!empty($activity_content['max_score'])) {
-      $db_connection = \Drupal::service('database');
       unset($activity_content['max_score']['omr_id']);
       $max_score = $activity_content['max_score'];
       $max_score['parent_id'] = $module->id();
@@ -595,11 +615,12 @@ class ImportTrainingForm extends FormBase {
       $max_score['child_vid'] = $activity->get('vid')->getValue()[0]['value'];
 
       try {
-        $db_connection->insert('opigno_module_relationship')
+        $this->database->insert('opigno_module_relationship')
           ->fields($max_score)
           ->execute();
-      } catch (\Exception $e) {
-        \Drupal::logger('opigno_groups_migration')
+      }
+      catch (\Exception $e) {
+        $this->logger('opigno_groups_migration')
           ->error($e->getMessage());
       }
     }
@@ -612,8 +633,9 @@ class ImportTrainingForm extends FormBase {
    *   Entity type.
    *
    * @return array
+   *   The list of fields.
    */
-  protected function fieldColections($type) {
+  protected function fieldCollections(string $type): array {
     switch ($type) {
       case 'learning_path':
         return [
@@ -669,11 +691,12 @@ class ImportTrainingForm extends FormBase {
    * @param array $activity_content
    *   List of settings from imported file.
    *
-   * @return OpignoActivity
+   * @return \Drupal\opigno_module\Entity\OpignoActivity
+   *   The created Opigno activity entity.
    *
    * @throws \Exception
    */
-  protected function importActivity($activity_content) {
+  protected function importActivity(array $activity_content): OpignoActivity {
     $new_activity = OpignoActivity::create([
       'type' => $activity_content['type'][0]['target_id'],
     ]);
@@ -682,7 +705,7 @@ class ImportTrainingForm extends FormBase {
     $new_activity->set('langcode', $activity_content['langcode'][0]['value']);
     $new_activity->set('status', $activity_content['status'][0]['value']);
 
-    prepare_directory_structure_for_import();
+    opigno_module_prepare_directory_structure_for_import();
 
     switch ($activity_content['type'][0]['target_id']) {
       case 'opigno_long_answer':
@@ -709,10 +732,10 @@ class ImportTrainingForm extends FormBase {
           $uri = $this->copyFile($scorm_file_path, 'public://opigno_scorm/' . $file_content['file_name'], 'public://opigno_scorm');
 
           if (!empty($uri)) {
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
-              'status' => $file_content['status'][0]['value'],
+              'status' => is_array($file_content['status']) ? $file_content['status'][0]['value'] : $file_content['status'],
             ]);
             $file->save();
             $fid = $file->id();
@@ -728,10 +751,10 @@ class ImportTrainingForm extends FormBase {
           $uri = $this->copyFile($tincan_file_path, 'public://opigno_tincan/' . $file_content['file_name'], 'public://opigno_tincan');
 
           if (!empty($uri)) {
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
-              'status' => $file_content['status'][0]['value'],
+              'status' => is_array($file_content['status']) ? $file_content['status'][0]['value'] : $file_content['status'],
             ]);
             $file->save();
 
@@ -745,19 +768,18 @@ class ImportTrainingForm extends FormBase {
       case 'opigno_slide':
         foreach ($activity_content['files'] as $file_key => $file_content) {
           $slide_file_path = $this->tmp . '/' . $file_key;
-          $current_timestamp = \Drupal::time()->getCurrentTime();
+          $current_timestamp = $this->time->getCurrentTime();
           $date = date('Y-m', $current_timestamp);
 
           $uri = $this->copyFile($slide_file_path, 'public://' . $date . '/' . $file_content['file_name'], 'public://' . $date);
 
           if (!empty($uri)) {
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
-              'status' => $file_content['status'][0]['value'],
+              'status' => is_array($file_content['status']) ? $file_content['status'][0]['value'] : $file_content['status'],
             ]);
             $file->save();
-
 
             $media = Media::create([
               'bundle' => $file_content['bundle'],
@@ -778,19 +800,18 @@ class ImportTrainingForm extends FormBase {
       case 'opigno_video':
         foreach ($activity_content['files'] as $file_key => $file_content) {
           $video_file_path = $this->tmp . '/' . $file_key;
-          $current_timestamp = \Drupal::time()->getCurrentTime();
+          $current_timestamp = $this->time->getCurrentTime();
           $date = date('Y-m', $current_timestamp);
 
           $uri = $this->copyFile($video_file_path, 'public://video-thumbnails/' . $date . '/' . $file_content['file_name'], 'public://video-thumbnails/' . $date);
 
           if (!empty($uri)) {
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
               'status' => $file_content['status'],
             ]);
             $file->save();
-
 
             $new_activity->field_video->target_id = $file->id();
           }
@@ -810,7 +831,7 @@ class ImportTrainingForm extends FormBase {
           $editor = H5PEditorUtilities::getInstance();
           $h5pEditorAjax = new H5PEditorAjaxImport($editor->ajax->core, $editor, $editor->ajax->storage);
 
-          if ($h5pEditorAjax->isValidPackage(TRUE)) {
+          if ($h5pEditorAjax->isValidPackage()) {
             // Add new libraries from file package.
             $storage = new H5PStorageImport($h5pEditorAjax->core->h5pF, $h5pEditorAjax->core);
 
@@ -831,8 +852,7 @@ class ImportTrainingForm extends FormBase {
             $h5p_json = file_get_contents($real_path);
 
             $format = 'json';
-            $serializer = \Drupal::service('serializer');
-            $h5p_json = $serializer->decode($h5p_json, $format);
+            $h5p_json = $this->serializer->decode($h5p_json, $format);
             $dependencies = $h5p_json['preloadedDependencies'];
 
             // Get ID of main library.
@@ -880,8 +900,8 @@ class ImportTrainingForm extends FormBase {
             $h5p_content->save();
             $new_activity->set('opigno_h5p', $h5p_content->id());
 
-            $h5p_dest_path = \Drupal::config('h5p.settings')->get('h5p_default_path');
-            $h5p_dest_path = !empty($h5p_dest_path) ? $h5p_dest_path : 'h5p';
+            $h5p_dest_path = $this->config->get('h5p_default_path');
+            $h5p_dest_path = $h5p_dest_path ?: 'h5p';
 
             $dest_folder = DRUPAL_ROOT . '/sites/default/files/' . $h5p_dest_path . '/content/' . $h5p_content->id();
             $source_folder = DRUPAL_ROOT . '/sites/default/files/opigno-import/h5p/content/*';
@@ -970,7 +990,7 @@ class ImportTrainingForm extends FormBase {
   }
 
   /**
-   * Prepare Directories and copy needed files.
+   * Prepare directories and copy needed files.
    *
    * @param string $file_source
    *   Source file.
@@ -980,16 +1000,18 @@ class ImportTrainingForm extends FormBase {
    *   Destination folder.
    *
    * @return string
+   *   The uri of the copied files directory.
    */
-  protected function copyFile($file_source, $destination, $dest_folder) {
+  protected function copyFile(string $file_source, string $destination, string $dest_folder): string {
     $this->fileSystem->prepareDirectory($dest_folder, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
     $uri = '';
     try {
       $uri = $this->fileSystem->copy($file_source, $destination, FileSystemInterface::EXISTS_RENAME);
-    } catch (\Exception $e) {
-      \Drupal::logger('opigno_groups_migration')
-        ->error($e->getMessage());
     }
+    catch (\Exception $e) {
+      $this->logger('opigno_groups_migration')->error($e->getMessage());
+    }
+
     return $uri;
   }
 

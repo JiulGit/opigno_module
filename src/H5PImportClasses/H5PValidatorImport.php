@@ -39,7 +39,32 @@ class H5PValidatorImport extends \H5PValidator {
       return FALSE;
     }
 
+    list($contentWhitelist, $contentRegExp) = $this->getWhitelistRegExp(FALSE);
+
     if ($zip->open($tmpPath) === TRUE) {
+      // Check for valid file types, JSON files + file sizes before continuing
+      // to unpack.
+      for ($i = 0; $i < $zip->numFiles; $i++) {
+        $fileStat = $zip->statIndex($i);
+
+        $fileName = mb_strtolower($fileStat['name']);
+        if (preg_match('/(^[\._]|\/[\._])/', $fileName) !== 0) {
+          // Skip any file or folder starting with a . or _.
+          continue;
+        }
+
+        // This is a content file, check that the file type is allowed.
+        if ((strpos($fileName, 'content/') === 0) && $skipContent === FALSE && $this->h5pC->disableFileCheck !== TRUE && !preg_match($contentRegExp, $fileName)) {
+          $this->h5pF->setErrorMessage($this->h5pF->t('File "%filename" not allowed. Only files with the following extensions are allowed: %files-allowed.', [
+            '%filename' => $fileStat['name'],
+            '%files-allowed' => $contentWhitelist,
+          ]), 'not-in-whitelist');
+          H5PStorageImport::deleteFileTree($tmpDir);
+          $zip->close();
+          return FALSE;
+        }
+      }
+
       $zip->extractTo($tmpDir);
       $zip->close();
     }
@@ -93,6 +118,22 @@ class H5PValidatorImport extends \H5PValidator {
    */
   public static function libraryToString(array $library, $folderName = FALSE) {
     return (isset($library['machineName']) ? $library['machineName'] : $library['name']) . ($folderName ? '-' : ' ') . $library['majorVersion'] . '.' . $library['minorVersion'];
+  }
+
+  /**
+   * Help retrieve file type regexp whitelist from plugin.
+   *
+   * @param bool $isLibrary
+   *   Separate list with more allowed file types.
+   *
+   * @return string RegExp.
+   */
+  private function getWhitelistRegExp($isLibrary) {
+    $whitelist = $this->h5pF->getWhitelist($isLibrary, \H5PCore::$defaultContentWhitelist, \H5PCore::$defaultLibraryWhitelistExtras);
+    return [
+      $whitelist,
+      '/\.(' . preg_replace('/ +/i', '|', preg_quote($whitelist)) . ')$/i',
+    ];
   }
 
 }

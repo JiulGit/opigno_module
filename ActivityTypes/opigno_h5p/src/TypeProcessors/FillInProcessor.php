@@ -2,8 +2,6 @@
 
 namespace Drupal\opigno_h5p\TypeProcessors;
 
-use Drupal\Component\Utility\Xss;
-
 /**
  * Class FillInProcessor.
  *
@@ -29,51 +27,60 @@ class FillInProcessor extends TypeProcessor {
   const CRP_REPORT_SEPARATOR = ' / ';
 
   /**
-   * Options for interaction and generates a human readable HTML report.
+   * Support for the Alternatives extension in the x-api event.
    */
-  public function generateHTML($description, $crp, $response, $extras, $scoreSettings = NULL) {
+  const CONTENT_TYPE_ALTERNATIVES = 'https://h5p.org/x-api/alternatives';
+
+  /**
+   * Support the Case Sensitivity extension in the x-api event.
+   */
+  const CONTENT_TYPE_CASE_SENSITIVITY = 'https://h5p.org/x-api/case-sensitivity';
+
+  /**
+   * {@inheritdoc}
+   */
+  public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras,
+    object $scoreSettings = NULL
+  ): string {
     // We need some style for our report.
-    $this->setStyle('opigno_h5p/opigno_h5p.fill-in');
+    $this->setStyle('styles/fill-in.css');
 
-    // Generate interaction options.
-    $caseMatters = $this->determineCaseMatters($crp[0]);
-
-    if (!empty($crp)) {
-      // Process correct responses and user responses patterns.
-      $processedCRPs = $this->processCRPs($crp, $caseMatters['nextIndex']);
-      $processedResponse = $this->processResponse($response);
-
-      $header = $this->generateHeader($scoreSettings);
-
-      // Build report from description, correct responses and user responses.
-      $report = $this->buildReportOutput($description,
-        $processedCRPs,
-        $processedResponse,
-        $caseMatters['caseSensitive']
-      );
-
-      $footer = $this->generateFooter();
+    if (isset($extras->extensions->{self::CONTENT_TYPE_CASE_SENSITIVITY}) &&
+      isset($extras->extensions->{self::CONTENT_TYPE_ALTERNATIVES})) {
+      $caseMatters = ['caseSensitive' => $extras->extensions->{self::CONTENT_TYPE_CASE_SENSITIVITY}];
+      $processedCRPs = $extras->extensions->{self::CONTENT_TYPE_ALTERNATIVES};
     }
     else {
-      // If CPRs aren't available, display the question and the response.
-      $header =
-        '<div class="h5p-reporting-description">' .
-          Xss::filter($description) .
-        '</div>';
+      // Generate interaction options.
+      $caseMatters = $this->determineCaseMatters(empty($crp[0]) ? '' : $crp[0]);
 
-      $report =
-        '<div class="h5p-fill-in-user-response">' .
-          Xss::filter($response) .
-        '</div>';
-
-      // Footer information are not necessary if CRPs are not set.
-      $footer = NULL;
+      // Process correct responses.
+      $processedCRPs = $this->processCrps($crp, $caseMatters['nextIndex']);
     }
 
+    // Process user responses patterns.
+    $processedResponse = $this->processResponse($response);
+
+    // Build report from description, correct responses and user responses.
+    $report = $this->buildReportOutput($description,
+      $processedCRPs,
+      $processedResponse,
+      $caseMatters['caseSensitive'] ?? FALSE
+    );
+
+    $header = $this->generateHeader($scoreSettings);
+    $longFillIn = property_exists($extras, 'longfillin') ? ' h5p-long-fill-in' : '';
     $container =
-      '<div class="h5p-reporting-container h5p-fill-in-container">' .
-        $header . $report .
+      '<div class="h5p-reporting-container h5p-fill-in-container' . $longFillIn . '">' .
+      $header . $report .
       '</div>';
+
+    // Footer only required if there is a correct responses pattern.
+    $footer = (isset($crp)) ? $this->generateFooter() : '';
 
     return $container . $footer;
   }
@@ -84,9 +91,8 @@ class FillInProcessor extends TypeProcessor {
   private function generateHeader($scoreSettings) {
     $scoreHtml = $this->generateScoreHtml($scoreSettings);
 
-    return
-      "<div class='h5p-fill-in-header'>" .
-        $scoreHtml .
+    return "<div class='h5p-fill-in-header'>" .
+      $scoreHtml .
       "</div>";
   }
 
@@ -94,11 +100,10 @@ class FillInProcessor extends TypeProcessor {
    * Generate footer.
    */
   public function generateFooter() {
-    return
-      '<div class="h5p-fill-in-footer">' .
-        '<span class="h5p-fill-in-correct-responses-pattern">' . t('Correct Answer') . '</span>' .
-        '<span class="h5p-fill-in-user-response-correct">' . t('Your correct answer') . '</span>' .
-        '<span class="h5p-fill-in-user-response-wrong">' . t('Your incorrect answer') . '</span>' .
+    return '<div class="h5p-fill-in-footer">' .
+      '<span class="h5p-fill-in-correct-responses-pattern">Correct Answer</span>' .
+      '<span class="h5p-fill-in-user-response-correct">Your correct answer</span>' .
+      '<span class="h5p-fill-in-user-response-wrong">Your incorrect answer</span>' .
       '</div>';
   }
 
@@ -107,7 +112,7 @@ class FillInProcessor extends TypeProcessor {
    *
    * The result is a two dimensional array sorted on placeholder order.
    *
-   * @param array $crp
+   * @param array|null $crp
    *   Correct responses pattern.
    * @param int $strStartIndex
    *   Start index of actual response pattern.
@@ -116,13 +121,16 @@ class FillInProcessor extends TypeProcessor {
    *
    * @return array
    *   Two dimensional array.
-   *   The first array dimensions is sorted on placeholder order, and the second
-   *   separates between correct answer alternatives.
+   *   The first array dimensions is sorted on placeholder order,
+   *   and the second separates between correct answer alternatives.
    */
-  private function processCRPs(array $crp, $strStartIndex) {
+  private function processCrps(?array $crp, int $strStartIndex): array {
 
     // CRPs sorted by placeholder order.
     $sortedCRP = [];
+    if (!is_array($crp)) {
+      return $sortedCRP;
+    }
 
     foreach ($crp as $crpString) {
 
@@ -176,8 +184,8 @@ class FillInProcessor extends TypeProcessor {
     }
 
     return [
-      'html'          => $html,
-      'nextIndex'     => $nextIndex,
+      'html' => $html,
+      'nextIndex' => $nextIndex,
       'caseSensitive' => $caseSensitive,
     ];
   }
@@ -185,10 +193,27 @@ class FillInProcessor extends TypeProcessor {
   /**
    * Build report.
    *
-   * Creates a stylable HTML report from description user responses
-   * and correct responses.
+   * Creates a stylable HTML report from description user responses and correct
+   * responses.
+   *
+   * @param string $description
+   *   Description.
+   * @param array|null $crp
+   *   Correct responses pattern.
+   * @param array $response
+   *   User responses.
+   * @param bool $caseSensitive
+   *   Case sensitivity of interaction.
+   *
+   * @return string
+   *   The report output.
    */
-  private function buildReportOutput($description, $crp, $response, $caseSensitive) {
+  private function buildReportOutput(
+    string $description,
+    ?array $crp,
+    array $response,
+    bool $caseSensitive
+  ): string {
     // Get placeholder replacements and replace them.
     $placeholderReplacements = $this->getPlaceholderReplacements($crp,
       $response,
@@ -198,11 +223,9 @@ class FillInProcessor extends TypeProcessor {
   }
 
   /**
-   * Process correct responses patterns and user responses.
+   * Format user answer to replace placeholders in description.
    *
-   * Format them to replace placeholders in description.
-   *
-   * @param array $crp
+   * @param array|null $crp
    *   Correct responses patterns.
    * @param array $response
    *   User responses.
@@ -212,12 +235,21 @@ class FillInProcessor extends TypeProcessor {
    * @return array
    *   Placeholder replacements.
    */
-  private function getPlaceholderReplacements(array $crp, array $response, $caseSensitive) {
+  private function getPlaceholderReplacements(?array $crp, array $response, bool $caseSensitive): array {
     $placeholderReplacements = [];
 
-    foreach ($crp as $index => $value) {
+    // Return response without markup if answers are neither right nor wrong.
+    if (!$crp) {
+      foreach ($response as $answer) {
+        $placeholderReplacements[] =
+          '<span class="h5p-fill-in-user-response h5p-fill-in-user-response-correct h5p-fill-in-no-correct">' .
+          nl2br($answer) .
+          '</span>';
+      }
+    }
 
-      $currentResponse = isset($response[$index]) ? $response[$index] : '';
+    foreach ($crp as $index => $value) {
+      $currentResponse = $response[$index] ?? '';
 
       // Determine user response styling.
       $isCorrect = $this->isResponseCorrect($currentResponse,
@@ -234,13 +266,13 @@ class FillInProcessor extends TypeProcessor {
         $currentResponse .
         '</span>';
 
-      $CRPhtml = $this->getCRPHtml($value, $currentResponse, $caseSensitive);
+      $crpHtml = $this->getCrpHtml($value, $currentResponse, $caseSensitive);
 
       $correctResponsePattern = '';
-      if (strlen($CRPhtml) > 0) {
+      if (strlen($crpHtml) > 0) {
         $correctResponsePattern .=
           '<span class="h5p-fill-in-correct-responses-pattern">' .
-            $CRPhtml .
+          $crpHtml .
           '</span>';
       }
 
@@ -254,16 +286,16 @@ class FillInProcessor extends TypeProcessor {
    * Generate HTML from a single correct response pattern.
    *
    * @param array $singleCRP
-   *   Single CRP.
+   *   A single correct pattern to check.
    * @param string $response
    *   User response.
    * @param bool $caseSensitive
-   *   Case sensivity flag.
+   *   The case sensitivity.
    *
    * @return string
-   *   CRP html.
+   *   The rendered CRP html.
    */
-  private function getCRPHtml(array $singleCRP, $response, $caseSensitive) {
+  private function getCrpHtml(array $singleCRP, string $response, bool $caseSensitive): string {
     $html = [];
 
     foreach ($singleCRP as $value) {
@@ -288,25 +320,25 @@ class FillInProcessor extends TypeProcessor {
   }
 
   /**
-   * Determine if a user response is correct.
+   * Check if the answer correct by matching it with the correct pattern.
    *
    * @param string $response
    *   User response.
-   * @param array $crp
+   * @param string $crp
    *   Correct responses pattern.
    * @param bool $caseSensitive
    *   Case sensitivity.
    *
    * @return bool
-   *   True if user response is correct.
+   *   TRUE if the user's response is correct, FALSE otherwise.
    */
-  private function isResponseCorrect($response, array $crp, $caseSensitive) {
-    $userResponse    = $response;
+  private function isResponseCorrect(string $response, string $crp, bool $caseSensitive): bool {
+    $userResponse = $response;
     $matchingPattern = $crp;
 
     // Make user response and matching pattern lower case if case insensitive.
     if (isset($caseSensitive) && $caseSensitive === FALSE) {
-      $userResponse    = strtolower($response);
+      $userResponse = strtolower($response);
       $matchingPattern = array_map('strtolower', $crp);
     }
 
@@ -322,7 +354,7 @@ class FillInProcessor extends TypeProcessor {
    * @return array
    *   List of user responses for the different fill-ins.
    */
-  private function processResponse($response) {
+  private function processResponse(string $response): array {
     return explode(self::RESPONSES_SEPARATOR, $response);
   }
 
@@ -330,15 +362,14 @@ class FillInProcessor extends TypeProcessor {
    * Fill in description placeholders with replacements.
    *
    * @param string $description
-   *   Description.
+   *   The description text.
    * @param array $placeholderReplacements
-   *   Replacements for placeholders in
-   *   description.
+   *   Replacements for placeholders in the description.
    *
    * @return string
    *   Description with replaced placeholders.
    */
-  private function replacePlaceholders($description, array $placeholderReplacements) {
+  private function replacePlaceholders(string $description, array $placeholderReplacements): string {
     $replacedDescription = $description;
 
     // Determine position of next placeholder and the corresponding

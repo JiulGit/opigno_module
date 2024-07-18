@@ -2,21 +2,17 @@
 
 namespace Drupal\opigno_module;
 
+use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Plugin\PluginBase;
 use Drupal\opigno_module\Entity\OpignoActivityInterface;
 use Drupal\opigno_module\Entity\OpignoAnswerInterface;
 
 /**
- * Class ActivityAnswerPluginBase.
+ * Defines the base class for activity answer plugins.
+ *
+ * @package Drupal\opigno_module
  */
 abstract class ActivityAnswerPluginBase extends PluginBase implements ActivityAnswerPluginInterface {
-
-  /**
-   * ActivityAnswerPluginBase constructor.
-   */
-  public function __construct(array $configuration, $plugin_id, $plugin_definition) {
-    parent::__construct($configuration, $plugin_id, $plugin_definition);
-  }
 
   /**
    * {@inheritdoc}
@@ -50,5 +46,10 @@ abstract class ActivityAnswerPluginBase extends PluginBase implements ActivityAn
    * {@inheritdoc}
    */
   public function answeringForm(array &$form) {}
+
+  /**
+   * {@inheritdoc}
+   */
+  public function answeringFormSubmit(array &$form, FormStateInterface $form_state, OpignoAnswerInterface $answer): void {}
 
 }

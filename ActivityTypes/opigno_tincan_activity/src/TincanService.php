@@ -3,12 +3,20 @@
 namespace Drupal\opigno_tincan_activity;
 
 use Drupal\Core\Database\Connection;
+use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\file\Entity\File;
+use Drupal\opigno_module\Traits\FileSecurity;
+use Drupal\opigno_module\Traits\UnsafeFileValidation;
 
 /**
- * Class TincanService.
+ * Defines the service to work with Tincan packages.
+ *
+ * @package Drupal\opigno_tincan_activity
  */
 class TincanService implements TincanServiceInterface {
+
+  use UnsafeFileValidation;
+  use FileSecurity;
 
   const PATH_PUBLIC_PACKAGE_FOLDER = 'public://opigno_tincan/';
 
@@ -16,13 +24,26 @@ class TincanService implements TincanServiceInterface {
 
   const SCORE_MAX = 50;
 
+  /**
+   * The DB connection service.
+   *
+   * @var \Drupal\Core\Database\Connection
+   */
   protected $connection;
+
+  /**
+   * The logger service.
+   *
+   * @var \Drupal\Core\Logger\LoggerChannelInterface
+   */
+  protected $logger;
 
   /**
    * Constructs a new TincanService object.
    */
-  public function __construct(Connection $connection) {
+  public function __construct(Connection $connection, LoggerChannelFactoryInterface $logger) {
     $this->connection = $connection;
+    $this->logger = $logger->get('opigno_tincan_activity');
   }
 
   /**
@@ -42,13 +63,11 @@ class TincanService implements TincanServiceInterface {
       catch (\Exception $e) {
         return $e;
       }
-    };
+    }
 
     $package_info = self::getInfoFromExtractedPackage($file);
     if ($package_info === FALSE) {
-      \Drupal::logger('opigno_tincan_activity')->error(
-        'The package does not contain an activity ID or a launch file'
-      );
+      $this->logger->error('The package does not contain an activity ID or a launch file');
       return;
     }
     // Record data from extracted zip to DB.
@@ -82,7 +101,7 @@ class TincanService implements TincanServiceInterface {
    * {@inheritdoc}
    */
   public function deleteTincanPackage() {
-    // TODO: Implement deleteTincanPackage() method.
+    // @todo Implement deleteTincanPackage() method.
   }
 
   /**
@@ -169,6 +188,23 @@ class TincanService implements TincanServiceInterface {
   }
 
   /**
+   * Public directories will be protected by adding an .htaccess.
+   *
+   * @param string $directory
+   *   A string reference containing the name of a directory path or URI.
+   *
+   * @return bool
+   *   TRUE if the directory exists (or was created), is writable and is
+   *   protected (if it is public). FALSE otherwise.
+   */
+  protected static function prepareDirectory(string $directory): bool {
+    if (0 === strpos($directory, 'public://')) {
+      return static::writeHtaccess($directory);
+    }
+    return TRUE;
+  }
+
+  /**
    * This method will unzip the package to the public extracted folder.
    *
    * It will use the constants self::PATH_PUBLIC_EXTRACTED_PACKAGE_FOLDER.
@@ -187,6 +223,14 @@ class TincanService implements TincanServiceInterface {
     $zip = new \ZipArchive();
     $result = $zip->open($path);
     if ($result === TRUE) {
+      if (!static::validate($zip)) {
+        \Drupal::messenger()->addMessage(t('Unsafe files detected.'), 'error');
+        $zip->close();
+        \Drupal::service('file_system')->delete($path);
+
+        return FALSE;
+      }
+      static::prepareDirectory(self::PATH_PUBLIC_EXTRACTED_PACKAGE_FOLDER);
       $extract_dir = self::getExtractPath($file);
       $zip->extractTo($extract_dir);
       $zip->close();
@@ -226,8 +270,11 @@ class TincanService implements TincanServiceInterface {
           $error = 'ER_SEEK';
           break;
       }
-      \Drupal::logger('opigno_tincan_activity')
-        ->error("An error occurred when unzipping the TINCAN package data. Error: !error", ['!error' => $error]);
+      \Drupal::logger('opigno_tincan_activity')->error(
+        "An error occurred when unzipping the TINCAN package data. Error: %error", [
+          '%error' => $error,
+        ]
+      );
 
       return FALSE;
     }

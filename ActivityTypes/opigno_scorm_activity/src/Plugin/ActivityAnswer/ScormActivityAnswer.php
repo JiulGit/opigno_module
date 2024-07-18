@@ -7,7 +7,7 @@ use Drupal\opigno_module\Entity\OpignoActivityInterface;
 use Drupal\opigno_module\Entity\OpignoAnswerInterface;
 
 /**
- * Class ScormActivityAnswer.
+ * Defines the SCORM activity answer plugin.
  *
  * @ActivityAnswer(
  *   id="opigno_scorm",
@@ -34,9 +34,13 @@ class ScormActivityAnswer extends ActivityAnswerPluginBase {
     $scorm_file = $activity->get('opigno_scorm_package')->entity;
     $scorm = $scorm_controller->scormLoadByFileEntity($scorm_file);
 
+    if (!$scorm) {
+      return $score;
+    }
+
     // Get SCORM API version.
-    $metadata = unserialize($scorm->metadata);
-    if (strpos($metadata['schemaversion'], '1.2') !== FALSE) {
+    $metadata = unserialize($scorm->metadata, ['allowed_classes' => FALSE]);
+    if (str_contains($metadata['schemaversion'], '1.2')) {
       $scorm_version = '1.2';
       $completion_key = 'cmi.core.lesson_status';
       $raw_key = 'cmi.core.score.raw';

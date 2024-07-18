@@ -12,6 +12,8 @@ use Drupal\h5p\H5PDrupal\H5PDrupal;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\Core\Ajax\AjaxResponse;
 use Drupal\Core\Ajax\SettingsCommand;
+use Drupal\opigno_module\Traits\FileSecurity;
+use Drupal\opigno_module\Traits\UnsafeFileValidation;
 
 /**
  * Class ActivitiesBrowserController.
@@ -20,15 +22,32 @@ use Drupal\Core\Ajax\SettingsCommand;
  */
 class ExternalPackageController extends ControllerBase {
 
+  use UnsafeFileValidation;
+  use FileSecurity;
+
+  /**
+   * Temporary folder for the external ppt files.
+   *
+   * @var string
+   */
+  const PPT_TEMP_DIR = 'external_packages_ppt';
+
   /**
    * External package form ajax callback.
    */
   public static function ajaxFormExternalPackageCallback(&$form, FormStateInterface $form_state) {
     $response = new AjaxResponse();
 
+    // Check for upload errors.
+    $errors = [];
+    $upload_error = $form_state->get('upload_error');
+    if ($upload_error) {
+      $errors[] = $upload_error;
+    }
+
     // If any errors - return form.
-    if ($form_state->hasAnyErrors()) {
-      if ($errors = $form_state->getErrors()) {
+    if (!empty($errors) || $form_state->hasAnyErrors()) {
+      if ($errors += $form_state->getErrors()) {
         $errors_value = [];
         foreach ($errors as $error) {
           $errors_value[] = [
@@ -87,7 +106,7 @@ class ExternalPackageController extends ControllerBase {
    *
    * @see opigno_module_form_alter()
    */
-  public static function ajaxFormExternalPackageFormSubmit($form, FormState &$form_state) {
+  public static function ajaxFormExternalPackageFormSubmit(&$form, FormState $form_state) {
     $fid = $form_state->get('package');
     $file = File::load($fid);
     $params = \Drupal::routeMatch()->getParameters();
@@ -95,75 +114,108 @@ class ExternalPackageController extends ControllerBase {
 
     // If one information missing, return an error.
     if (!isset($module)) {
-      // TODO: Add an error message here.
+      $form_state->set('upload_error', t('Could not detect Opigno module from the current form.'));
       return;
     }
 
     if (!empty($file)) {
+
       // Get file extension.
       $extension = static::getFileExtension($file->getFilename());
       switch ($extension) {
         case 'zip':
+
           // Check file type. Can be "scorm" or "tincan".
           $type = static::checkPackageType($file);
 
           if (!$type) {
-            \Drupal::messenger()->addError(t("Package does not contain required files."));
-            return $form_state->setRebuild();
+            $form_state->set('upload_error', t('Package does not contain required files.'));
+            return;
           }
+
           // Create activity.
-          $entity = static::createActivityByPackageType($file, $type, $form, $form_state);
+          try {
+            $entity = static::createActivityByPackageType($file, $type, $form, $form_state);
+          }
+          catch (\Exception $e) {
+            $form_state->set('upload_error', $e->getMessage());
+            return;
+          }
+
           break;
 
         case 'h5p':
-          $entity = static::createActivityByPackageType($file, 'h5p', $form, $form_state);
-
+          try {
+            $entity = static::createActivityByPackageType($file, 'h5p', $form, $form_state);
+          }
+          catch (\Exception $e) {
+            $form_state->set('upload_error', $e->getMessage());
+            return;
+          }
           $storage = $form_state->getStorage();
-          if (!empty($storage['mode']) && $storage['mode'] == 'ppt') {
+          if (!empty($storage['mode']) && $storage['mode'] === 'ppt') {
             $ppt_dir = static::getPptConversionDir();
             $file_default_scheme = \Drupal::config('system.file')->get('default_scheme');
             $public_files_real_path = \Drupal::service('file_system')->realpath($file_default_scheme . "://");
             $ppt_dir_real_path = $public_files_real_path . '/' . $ppt_dir;
+
             // Clean up extra files.
             self::cleanDirectoryFiles($ppt_dir_real_path, [$file]);
           }
           break;
       }
       if (!$entity) {
-        \Drupal::messenger()->addWarning(t("Can't create activity."));
+        $form_state->set('upload_error', t("Can't create activity"));
+        return;
       }
-      else {
-        // Clear user input.
-        $input = $form_state->getUserInput();
-        // We should not clear the system items from the user input.
-        $clean_keys = $form_state->getCleanValueKeys();
-        $clean_keys[] = 'ajax_page_state';
 
-        foreach ($input as $key => $item) {
-          if (!in_array($key, $clean_keys)
-            && substr($key, 0, 1) !== '_') {
-            unset($input[$key]);
-          }
-        }
+      // Clear user input.
+      $input = $form_state->getUserInput();
+      // We should not clear the system items from the user input.
+      $clean_keys = $form_state->getCleanValueKeys();
+      $clean_keys[] = 'ajax_page_state';
 
-        // Store new entity for display in the AJAX callback.
-        $input['activity'] = $entity;
-        $form_state->setUserInput($input);
-
-        // Rebuild the form state values.
-        $form_state->setRebuild();
-        $form_state->setStorage([]);
-
-        // Assign activity to module if entity is new.
-        if (!isset($item_id)) {
-          /** @var \Drupal\opigno_module\Controller\OpignoModuleController $opigno_module_controller */
-          $opigno_module_controller = \Drupal::service('opigno_module.opigno_module');
-          $opigno_module_controller->activitiesToModule([$entity], $module);
+      foreach ($input as $key => $item) {
+        if (!in_array($key, $clean_keys)
+          && substr($key, 0, 1) !== '_') {
+          unset($input[$key]);
         }
       }
+
+      // Store new entity for display in the AJAX callback.
+      $input['activity'] = $entity;
+      $form_state->setUserInput($input);
+
+      // Rebuild the form state values.
+      $form_state->setRebuild();
+      $form_state->setStorage([]);
+
+      // Assign activity to module if entity is new.
+      /** @var \Drupal\opigno_module\Controller\OpignoModuleController $opigno_module_controller */
+      $opigno_module_controller = \Drupal::service('opigno_module.opigno_module');
+      $opigno_module_controller->activitiesToModule([$entity], $module);
+
+      return;
     }
 
-    return $form_state->setRebuildInfo([t("Can't create an activity. File can't be uploaded.")]);
+    $form_state->set('upload_error', t("Can't create an activity. File can't be uploaded."));
+  }
+
+  /**
+   * Public directories will be protected by adding an .htaccess.
+   *
+   * @param string $directory
+   *   A string reference containing the name of a directory path or URI.
+   *
+   * @return bool
+   *   TRUE if the directory exists (or was created), is writable and is
+   *   protected (if it is public). FALSE otherwise.
+   */
+  protected static function prepareDirectory(string $directory): bool {
+    if (0 === strpos($directory, 'public://')) {
+      return static::writeHtaccess($directory);
+    }
+    return TRUE;
   }
 
   /**
@@ -178,7 +230,17 @@ class ExternalPackageController extends ControllerBase {
     $zip = new \ZipArchive();
     $result = $zip->open($path);
     if ($result === TRUE) {
-      $extract_dir = 'public://external_package_extracted/package_' . $file->id();
+      $base_path = 'public://external_package_extracted';
+      static::prepareDirectory($base_path);
+      $extract_dir = $base_path . '/package_' . $file->id();
+      if (!static::validate($zip)) {
+        \Drupal::messenger()->addMessage(t('Unsafe files detected.'), 'error');
+        $zip->close();
+        \Drupal::service('file_system')->delete($path);
+        \Drupal::service('file_system')->deleteRecursive($extract_dir);
+
+        return FALSE;
+      }
       $zip->extractTo($extract_dir);
       $zip->close();
 
@@ -196,17 +258,17 @@ class ExternalPackageController extends ControllerBase {
         $files = scandir($extract_dir);
         $count_files = count($files);
 
-        if ($count_files == 3 && is_dir($extract_dir. '/' . $files[2])) {
-          $subfolder_files = scandir($extract_dir. '/' . $files[2]);
+        if ($count_files == 3 && is_dir($extract_dir . '/' . $files[2])) {
+          $subfolder_files = scandir($extract_dir . '/' . $files[2]);
 
           if (in_array('imsmanifest.xml', $subfolder_files)) {
-            $source = $extract_dir. '/' . $files[2];
+            $source = $extract_dir . '/' . $files[2];
 
-            $i = new \RecursiveDirectoryIterator($source);
-            foreach($i as $f) {
-              if($f->isFile()) {
+            foreach (new \RecursiveDirectoryIterator($source) as $f) {
+              if ($f->isFile()) {
                 rename($f->getPathname(), $extract_dir . '/' . $f->getFilename());
-              } else if($f->isDir()) {
+              }
+              elseif ($f->isDir()) {
                 rename($f->getPathname(), $extract_dir . '/' . $f->getFilename());
                 unlink($f->getPathname());
               }
@@ -318,7 +380,7 @@ class ExternalPackageController extends ControllerBase {
 
     // Prepare temp folder.
     $interface = H5PDrupal::getInstance('interface', $file_field);
-    $temporary_file_path = ($mode && $mode == 'ppt') ? 'public://' . static::getPptConversionDir() : 'public://external_packages';
+    $temporary_file_path = ($mode && $mode === 'ppt') ? 'public://' . static::getPptConversionDir() : 'public://external_packages';
 
     // Tell H5P Core where to look for the files.
     $interface->getUploadedH5pPath(\Drupal::service('file_system')
@@ -328,7 +390,9 @@ class ExternalPackageController extends ControllerBase {
 
     // Call upon H5P Core to validate the contents of the package.
     $validator = H5PDrupal::getInstance('validator', $file_field);
-    $validator->isValidPackage();
+    if (!$validator->isValidPackage()) {
+      throw new \Exception('The H5P package did not validate.');
+    }
 
     // Store the uploaded file.
     $storage = H5PDrupal::getInstance('storage', $file_field);
@@ -345,7 +409,8 @@ class ExternalPackageController extends ControllerBase {
 
     if (!$content_id) {
       return FALSE;
-    };
+    }
+
     return $content_id;
   }
 
@@ -467,7 +532,7 @@ class ExternalPackageController extends ControllerBase {
 
     $libraries_data = [];
     foreach ($libraries as $library) {
-      $libraries_data[$library] = self::getH5PLibraryData($library);
+      $libraries_data[$library] = self::getLibraryData($library);
     }
 
     $h5p_json_string = '{"title":"Interactive Content","language":"und","mainLibrary":"H5P.CoursePresentation","embedTypes":["div"],"preloadedDependencies":[{"machineName":"H5P.CoursePresentation","majorVersion":"1","minorVersion":"17"},{"machineName":"FontAwesome","majorVersion":"4","minorVersion":"5"},{"machineName":"H5P.FontIcons","majorVersion":"1","minorVersion":"0"},{"machineName":"H5P.JoubelUI","majorVersion":"1","minorVersion":"3"},{"machineName":"Drop","majorVersion":"1","minorVersion":"0"},{"machineName":"Tether","majorVersion":"1","minorVersion":"0"},{"machineName":"H5P.Transition","majorVersion":"1","minorVersion":"0"}]}';
@@ -577,7 +642,7 @@ class ExternalPackageController extends ControllerBase {
    */
   public static function getPptConversionDir() {
     $user = \Drupal::currentUser();
-    return OPIGNO_MODULE_PPT_TEMP_DIR . '/' . $user->id();
+    return self::PPT_TEMP_DIR . '/' . $user->id();
   }
 
   /**
@@ -589,7 +654,7 @@ class ExternalPackageController extends ControllerBase {
    * @return array|mixed
    *   H5P library data.
    */
-  public static function getH5PLibraryData($machine_name) {
+  public static function getLibraryData(string $machine_name) {
     $db_connection = \Drupal::service('database');
     // Get new library id with highest version.
     $query = $db_connection->select('h5p_libraries', 'l')
@@ -635,16 +700,20 @@ class ExternalPackageController extends ControllerBase {
   /**
    * Get a single option from opigno_module.settings.
    *
-   * @param $settingName
-   * @param $fallback
+   * @param string $settingName
+   *   The name of the setting.
+   * @param string $fallback
+   *   The default value that will be returned in case if the setting value
+   *   can't be taken.
    *
    * @return array|mixed
+   *   The Opigno config value.
    */
-  public static function getOpignoSetting($settingName, $fallback) {
+  public static function getOpignoSetting(string $settingName, string $fallback) {
     $config = \Drupal::configFactory()->get('opigno_module.settings');
     $output = $config->get($settingName);
-    $output = !empty($output) ? $output : $fallback;
-    return $output;
+
+    return !empty($output) ? $output : $fallback;
   }
 
 }

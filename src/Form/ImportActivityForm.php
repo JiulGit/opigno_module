@@ -2,14 +2,9 @@
 
 namespace Drupal\opigno_module\Form;
 
-use Drupal\Component\Datetime\TimeInterface;
-use Drupal\Core\Config\ConfigFactoryInterface;
-use Drupal\Core\Database\Connection;
-use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Link;
 use Drupal\Core\File\FileSystemInterface;
-use Drupal\Core\Messenger\MessengerInterface;
 use Drupal\file\Entity\File;
 use Drupal\h5p\Entity\H5PContent;
 use Drupal\h5p\H5PDrupal\H5PDrupal;
@@ -18,94 +13,14 @@ use Drupal\media\Entity\Media;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\H5PImportClasses\H5PEditorAjaxImport;
 use Drupal\opigno_module\H5PImportClasses\H5PStorageImport;
-use Symfony\Component\DependencyInjection\ContainerInterface;
-use Symfony\Component\Serializer\SerializerInterface;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
 
 /**
- * Import Activity form.
+ * Defines the form for the activity import.
+ *
+ * @package Drupal\opigno_module\Form
  */
-class ImportActivityForm extends FormBase {
-
-  /**
-   * The file system service.
-   *
-   * @var \Drupal\Core\File\FileSystemInterface
-   */
-  protected $fileSystem;
-
-  /**
-   * The time service.
-   *
-   * @var \Drupal\Component\Datetime\TimeInterface
-   */
-  protected $time;
-
-  /**
-   * The DB connection service.
-   *
-   * @var \Drupal\Core\Database\Connection
-   */
-  protected $database;
-
-  /**
-   * The serializer service.
-   *
-   * @var \Symfony\Component\Serializer\SerializerInterface
-   */
-  protected $serializer;
-
-  /**
-   * The H5P config.
-   *
-   * @var \Drupal\Core\Config\ImmutableConfig
-   */
-  protected $config;
-
-  /**
-   * ImportActivityForm constructor.
-   *
-   * @param \Drupal\Core\File\FileSystemInterface $file_system
-   *   The file system service.
-   * @param \Drupal\Component\Datetime\TimeInterface $time
-   *   The time service.
-   * @param \Drupal\Core\Database\Connection $database
-   *   The DB connection service.
-   * @param \Symfony\Component\Serializer\SerializerInterface $serializer
-   *   The serializer service.
-   * @param \Drupal\Core\Config\ConfigFactoryInterface $config_factory
-   *   The config factory service.
-   * @param \Drupal\Core\Messenger\MessengerInterface $messenger
-   *   The messenger service.
-   */
-  public function __construct(
-    FileSystemInterface $file_system,
-    TimeInterface $time,
-    Connection $database,
-    SerializerInterface $serializer,
-    ConfigFactoryInterface $config_factory,
-    MessengerInterface $messenger
-  ) {
-    $this->fileSystem = $file_system;
-    $this->time = $time;
-    $this->database = $database;
-    $this->serializer = $serializer;
-    $this->config = $config_factory->get('h5p.settings');
-    $this->messenger = $messenger;
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public static function create(ContainerInterface $container) {
-    return new static(
-      $container->get('file_system'),
-      $container->get('datetime.time'),
-      $container->get('database'),
-      $container->get('serializer'),
-      $container->get('config.factory'),
-      $container->get('messenger')
-    );
-  }
+class ImportActivityForm extends ImportBaseForm {
 
   /**
    * {@inheritdoc}
@@ -118,7 +33,7 @@ class ImportActivityForm extends FormBase {
    * {@inheritdoc}
    */
   public function buildForm(array $form, FormStateInterface $form_state, $mode = NULL) {
-    $is_ppt = ($mode && $mode == 'ppt') ? TRUE : FALSE;
+    $is_ppt = $mode && $mode == 'ppt';
     if ($is_ppt) {
       $form_state->set('mode', $mode);
     }
@@ -147,7 +62,10 @@ class ImportActivityForm extends FormBase {
    */
   public function validateForm(array &$form, FormStateInterface $form_state) {
     // Validation is optional.
-    if (empty($_FILES['files']['name']['activity_opi'])) {
+    $files = $this->getRequest()->files->get('files', []);
+    $uploaded = $files['activity_opi'] ?? NULL;
+
+    if (!$uploaded instanceof UploadedFile || !$uploaded->getClientOriginalName()) {
       // Only need to validate if the field actually has a file.
       $form_state->setError(
         $form['activity_opi'],
@@ -157,14 +75,46 @@ class ImportActivityForm extends FormBase {
   }
 
   /**
+   * Checks that the directory exists and is writable.
+   *
+   * Public directories will be protected by adding an .htaccess.
+   *
+   * @param string $directory
+   *   A string reference containing the name of a directory path or URI.
+   *
+   * @return bool
+   *   TRUE if the directory exists (or was created), is writable and is
+   *   protected (if it is public). FALSE otherwise.
+   */
+  protected function prepareDirectory(string $directory): bool {
+    if (!$this->fileSystem->prepareDirectory($directory, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY)) {
+      return FALSE;
+    }
+    if (0 === strpos($directory, 'public://')) {
+      return static::writeHtaccess($directory);
+    }
+
+    return TRUE;
+  }
+
+  /**
+   * Prepare temporary folder.
+   */
+  protected function prepareTemporary(): bool {
+    // Prepare folder.
+    $this->fileSystem->deleteRecursive($this->tmp);
+    return $this->prepareDirectory($this->tmp);
+  }
+
+  /**
    * {@inheritdoc}
    */
   public function submitForm(array &$form, FormStateInterface $form_state) {
     // Prepare folder.
-    $temporary_file_path = 'public://opigno-import';
-
-    $this->fileSystem->deleteRecursive($temporary_file_path);
-    $this->fileSystem->prepareDirectory($temporary_file_path, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
+    if (!$this->prepareTemporary()) {
+      $this->messenger()->addMessage($this->t('Failed to create directory.'), 'error');
+      return;
+    }
 
     // Prepare file validators.
     $extensions = ['opi'];
@@ -172,35 +122,33 @@ class ImportActivityForm extends FormBase {
       'file_validate_extensions' => $extensions,
     ];
     $files = [];
-    $file = file_save_upload('activity_opi', $validators, $temporary_file_path, NULL, FileSystemInterface::EXISTS_REPLACE);
+    $file = file_save_upload('activity_opi', $validators, $this->tmp, NULL, FileSystemInterface::EXISTS_REPLACE);
 
     if (!empty($file[0])) {
       $path = $this->fileSystem->realpath($file[0]->getFileUri());
 
-      $folder = DRUPAL_ROOT . '/sites/default/files/opigno-import';
-
       $zip = new \ZipArchive();
       $result = $zip->open($path);
 
-      if ($zip->locateName('.htaccess') !== FALSE) {
-        $this->messenger->addMessage(t('Unsafe files detected.'), 'error');
+      if (!static::validate($zip)) {
+        $this->messenger->addMessage($this->t('Unsafe files detected.'), 'error');
         $zip->close();
         $this->fileSystem->delete($path);
-        $this->fileSystem->deleteRecursive($temporary_file_path);
+        $this->fileSystem->deleteRecursive($this->tmp);
         return;
       }
 
       if ($result === TRUE) {
-        $zip->extractTo($folder);
+        $zip->extractTo($this->folder);
         $zip->close();
       }
 
       $this->fileSystem->delete($path);
-      $files = scandir($folder);
+      $files = scandir($this->folder);
     }
 
     if (in_array('export-opigno_activity.json', $files)) {
-      $file_path = $temporary_file_path . '/export-opigno_activity.json';
+      $file_path = $this->tmp . '/export-opigno_activity.json';
       $real_path = $this->fileSystem->realpath($file_path);
       $file = file_get_contents($real_path);
 
@@ -209,7 +157,7 @@ class ImportActivityForm extends FormBase {
       $content = reset($activity_content_array);
 
       if (empty($content['bundle'])) {
-        $this->messenger->addMessage(t('Incorrect archive structure.'), 'error');
+        $this->messenger->addMessage($this->t('Incorrect archive structure.'), 'error');
         return;
       }
 
@@ -221,7 +169,7 @@ class ImportActivityForm extends FormBase {
       $new_activity->set('langcode', $content['langcode'][0]['value']);
       $new_activity->set('status', $content['status'][0]['value']);
 
-      prepare_directory_structure_for_import();
+      opigno_module_prepare_directory_structure_for_import();
 
       switch ($content['bundle']) {
         case 'opigno_long_answer':
@@ -239,10 +187,10 @@ class ImportActivityForm extends FormBase {
 
         case 'opigno_scorm':
           foreach ($content['files'] as $file_key => $file_content) {
-            $scorm_file_path = $temporary_file_path . '/' . $file_key;
+            $scorm_file_path = $this->tmp . '/' . $file_key;
             $uri = $this->fileSystem->copy($scorm_file_path, 'public://opigno_scorm/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
               'status' => $file_content['status'],
@@ -256,10 +204,10 @@ class ImportActivityForm extends FormBase {
 
         case 'opigno_tincan':
           foreach ($content['files'] as $file_key => $file_content) {
-            $tincan_file_path = $temporary_file_path . '/' . $file_key;
+            $tincan_file_path = $this->tmp . '/' . $file_key;
             $uri = $this->fileSystem->copy($tincan_file_path, 'public://opigno_tincan/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
               'status' => $file_content['status'],
@@ -281,12 +229,12 @@ class ImportActivityForm extends FormBase {
           }
 
           foreach ($content_files as $file_key => $file_content) {
-            $slide_file_path = $temporary_file_path . '/' . $file_key;
+            $slide_file_path = $this->tmp . '/' . $file_key;
             $current_timestamp = $this->time->getCurrentTime();
             $date = date('Y-m', $current_timestamp);
             $uri = $this->fileSystem->copy($slide_file_path, 'public://' . $date . '/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
               'status' => $file_content['status'],
@@ -311,12 +259,12 @@ class ImportActivityForm extends FormBase {
 
         case 'opigno_video':
           foreach ($content['files'] as $file_key => $file_content) {
-            $video_file_path = $temporary_file_path . '/' . $file_key;
+            $video_file_path = $this->tmp . '/' . $file_key;
             $current_timestamp = $this->time->getCurrentTime();
             $date = date('Y-m', $current_timestamp);
             $uri = $this->fileSystem->copy($video_file_path, 'public://video-thumbnails/' . $date . '/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-            $file = File::Create([
+            $file = File::create([
               'uri' => $uri,
               'uid' => $this->currentUser()->id(),
               'status' => $file_content['status'],
@@ -329,19 +277,19 @@ class ImportActivityForm extends FormBase {
 
         case 'opigno_h5p':
           $h5p_content_id = $content['opigno_h5p'][0]['h5p_content_id'];
-          $file = $folder . "/interactive-content-{$h5p_content_id}.h5p";
+          $file = $this->folder . "/interactive-content-{$h5p_content_id}.h5p";
           $interface = H5PDrupal::getInstance();
 
           if ($file) {
             $file_service = $this->fileSystem;
-            $dir = $file_service->realpath($temporary_file_path . '/h5p');
+            $dir = $file_service->realpath($this->tmp . '/h5p');
             $interface->getUploadedH5pFolderPath($dir);
-            $interface->getUploadedH5pPath($folder . "/interactive-content-{$h5p_content_id}.h5p");
+            $interface->getUploadedH5pPath($this->folder . "/interactive-content-{$h5p_content_id}.h5p");
 
             $editor = H5PEditorUtilities::getInstance();
             $h5pEditorAjax = new H5PEditorAjaxImport($editor->ajax->core, $editor, $editor->ajax->storage);
 
-            if ($h5pEditorAjax->isValidPackage(TRUE)) {
+            if ($h5pEditorAjax->isValidPackage()) {
               // Add new libraries from file package.
               $storage = new H5PStorageImport($h5pEditorAjax->core->h5pF, $h5pEditorAjax->core);
 
@@ -496,7 +444,7 @@ class ImportActivityForm extends FormBase {
         'opigno_activity' => $new_activity->id(),
       ];
 
-      $this->messenger->addMessage(t('Imported activity %activity', [
+      $this->messenger->addMessage($this->t('Imported activity %activity', [
         '%activity' => Link::createFromRoute($new_activity->label(), 'entity.opigno_activity.canonical', $route_parameters)->toString(),
       ]));
 

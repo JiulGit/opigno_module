@@ -79,6 +79,8 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
 
   /**
    * Static cache of user answers.
+   *
+   * @var array
    */
   protected $userAnswers = [];
 
@@ -204,26 +206,16 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
   }
 
   /**
-   * Get list of activity modules.
-   *
-   * @return array
+   * {@inheritdoc}
    */
-  public function getModules() {
-    /* @var $db_connection \Drupal\Core\Database\Connection */
-    $db_connection = \Drupal::service('database');
-    $query = $db_connection->select('opigno_module_relationship', 'om');
-    $query->fields('om', ['omr_id']);
-    $query->condition('om.child_id', $this->id());
-    $results =  $query->execute()->fetchAll();
-    $om_ids = [];
+  public function getModules(): array {
+    $om_ids = \Drupal::database()->select('opigno_module_relationship', 'om')
+      ->fields('om', ['parent_id'])
+      ->condition('om.child_id', $this->id())
+      ->execute()
+      ->fetchCol();
 
-    foreach ($results as $result) {
-      $om_ids[] = $result->omr_id;
-    }
-
-    $module_storage = static::entityTypeManager()->getStorage('opigno_module');
-    $modules = $module_storage->loadMultiple($om_ids);
-    return $modules;
+    return static::entityTypeManager()->getStorage('opigno_module')->loadMultiple($om_ids);
   }
 
   /**
@@ -245,7 +237,7 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
    */
   public function getUserAnswer(OpignoModuleInterface $opigno_module, UserModuleStatusInterface $attempt, AccountInterface $account, $latest_cert_date = NULL) {
-    $cid = $opigno_module->id() . '-' . $attempt->id() . '-' . $account->id();
+    $cid = $this->id() . '-' . $opigno_module->id() . '-' . $attempt->id() . '-' . $account->id();
     $answer_storage = static::entityTypeManager()->getStorage('opigno_answer');
     if (isset($this->userAnswers[$cid])) {
       return $this->userAnswers[$cid] ? $answer_storage->load($this->userAnswers[$cid]) : NULL;
@@ -343,10 +335,11 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
       ->setSetting('target_type', 'taxonomy_term')
       ->setSetting('handler', 'default:taxonomy_term')
       ->setSetting('handler_settings',
-        array(
-          'target_bundles' => array(
-            'skills' => 'skills'
-          )))
+        [
+          'target_bundles' => [
+            'skills' => 'skills',
+          ],
+        ])
       ->setDisplayOptions('form', [
         'type' => 'options_select',
         'weight' => 2,
@@ -399,10 +392,10 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
       ->setRevisionable(TRUE)
       ->setTranslatable(TRUE)
       ->setDefaultValue(FALSE)
-      ->setDisplayOptions('form', array(
+      ->setDisplayOptions('form', [
         'type' => 'boolean_checkbox',
         'weight' => 1,
-      ));
+      ]);
 
     $fields['status'] = BaseFieldDefinition::create('boolean')
       ->setLabel(t('Publishing status'))
@@ -474,9 +467,7 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
   }
 
   /**
-   * Get if evaluation Method Manual.
-   *
-   * @return bool
+   * {@inheritdoc}
    */
   public function evaluationMethodManual(): bool {
     if ($this->hasField('opigno_evaluation_method') && $this->get('opigno_evaluation_method')->value) {
@@ -488,11 +479,13 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
   /**
    * {@inheritdoc}
    */
-  public function revisionIds() {
-    return \Drupal::database()->query(
-      'SELECT vid FROM {opigno_activity_revision} WHERE id=:id ORDER BY revision_created DESC',
-      [':id' => $this->id()]
-    )->fetchCol();
+  public function revisionIds(): array {
+    return \Drupal::database()->select('opigno_activity_revision', 'oar')
+      ->fields('oar', ['vid'])
+      ->condition('oar.id', $this->id())
+      ->orderBy('oar.revision_created', 'DESC')
+      ->execute()
+      ->fetchCol();
   }
 
   /**

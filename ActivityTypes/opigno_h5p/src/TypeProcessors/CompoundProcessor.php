@@ -12,22 +12,26 @@ use Drupal\opigno_h5p\H5PReport;
 class CompoundProcessor extends TypeProcessor {
 
   /**
-   * Determines options for interaction, generates a human readable HTML report.
-   *
-   * @inheritdoc
+   * {@inheritdoc}
    */
-  public function generateHTML($description, $crp, $response, $extras, $scoreSettings = NULL) {
+  public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras,
+    ?object $scoreSettings = NULL
+  ): string {
     // We need some style for our report.
     $this->setStyle('opigno_h5p/opigno_h5p.compound');
 
-    $H5PReport = H5PReport::getInstance();
+    $h5pReport = H5PReport::getInstance();
     $reports = '';
 
     if (isset($extras->children)) {
       foreach ($extras->children as $childData) {
         $reports .=
           '<div class="h5p-result">' .
-            $H5PReport->generateReport($childData, NULL, $this->disableScoring) .
+          $h5pReport->generateReport($childData, NULL, $this->disableScoring) .
           '</div>';
       }
     }
@@ -47,7 +51,7 @@ class CompoundProcessor extends TypeProcessor {
         '</div>';
     }
     else {
-      return NULL;
+      return '';
     }
   }
 

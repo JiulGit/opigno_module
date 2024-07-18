@@ -7,6 +7,7 @@ use Drupal\Core\Entity\RevisionableContentEntityBase;
 use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\Entity\EntityChangedTrait;
 use Drupal\Core\Entity\EntityTypeInterface;
+use Drupal\group\Entity\GroupInterface;
 use Drupal\user\UserInterface;
 
 /**
@@ -139,15 +140,27 @@ class OpignoAnswer extends RevisionableContentEntityBase implements OpignoAnswer
   /**
    * {@inheritdoc}
    */
-  public function getActivity() {
-    return $this->get('activity')->entity;
+  public function getActivity(): ?OpignoActivityInterface {
+    $activity = $this->hasField('activity') ? $this->get('activity')->entity : NULL;
+    return $activity instanceof OpignoActivityInterface ? $activity : NULL;
   }
 
   /**
    * {@inheritdoc}
    */
-  public function getModule() {
-    return $this->get('module')->entity;
+  public function getModule(): ?OpignoModuleInterface {
+    $module = $this->hasField('module') ? $this->get('module')->entity : NULL;
+    return $module instanceof OpignoModuleInterface ? $module : NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getLearningPath(): ?GroupInterface {
+    $attempt = $this->getUserModuleStatus();
+    $lp = $attempt instanceof UserModuleStatusInterface ? $attempt->getLearningPath() : NULL;
+
+    return $lp instanceof GroupInterface ? $lp : NULL;
   }
 
   /**
@@ -161,8 +174,9 @@ class OpignoAnswer extends RevisionableContentEntityBase implements OpignoAnswer
   /**
    * {@inheritdoc}
    */
-  public function getUserModuleStatus() {
-    return $this->get('user_module_status')->entity;
+  public function getUserModuleStatus(): ?UserModuleStatusInterface {
+    $status = $this->hasField('user_module_status') ? $this->get('user_module_status')->entity : NULL;
+    return $status instanceof UserModuleStatusInterface ? $status : NULL;
   }
 
   /**
@@ -191,7 +205,7 @@ class OpignoAnswer extends RevisionableContentEntityBase implements OpignoAnswer
   /**
    * {@inheritdoc}
    */
-  public function getScore() {
+  public function getScore(): int {
     return (int) $this->get('score')->value;
   }
 

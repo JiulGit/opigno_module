@@ -418,6 +418,12 @@ class OpignoModuleForm extends ContentEntityForm {
     if (isset($values['skills_active']) && $values['skills_active']['value'] == TRUE && empty($values['skill_target'])) {
       $form_state->setErrorByName('skill_target', $this->t('Target skill could not be empty.'));
     }
+
+    if (!isset($values['uid'][0]['target_id'])) {
+      // If the author doesn't exist.
+      $values['uid'][0]['target_id'] = 0;
+      $form_state->setValues($values);
+    }
   }
 
 }

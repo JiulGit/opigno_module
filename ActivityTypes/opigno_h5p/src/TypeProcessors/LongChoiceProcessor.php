@@ -10,11 +10,15 @@ namespace Drupal\opigno_h5p\TypeProcessors;
 class LongChoiceProcessor extends TypeProcessor {
 
   /**
-   * Options for interaction and generates a human readable HTML report.
-   *
    * {@inheritdoc}
    */
-  public function generateHTML($description, $crp, $response, $extras = NULL, $scoreSettings = NULL) {
+  public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras = NULL,
+    ?object $scoreSettings = NULL
+  ): string {
     // We need some style for our report.
     $this->setStyle('opigno_h5p/opigno_h5p.long-choice');
 
@@ -25,9 +29,8 @@ class LongChoiceProcessor extends TypeProcessor {
     $bodyHTML = $this->generateBody($extras, $correctAnswers, $responses);
     $footer = $this->generateFooter();
 
-    return
-      '<div class="h5p-reporting-container h5p-long-choice-container">' .
-        $header . $bodyHTML .
+    return '<div class="h5p-reporting-container h5p-long-choice-container">' .
+      $header . $bodyHTML .
       '</div>' .
       $footer;
   }
@@ -39,9 +42,8 @@ class LongChoiceProcessor extends TypeProcessor {
     $descriptionHtml = $this->generateDescription($description);
     $scoreHtml = $this->generateScoreHtml($scoreSettings);
 
-    return
-      "<div class='h5p-long-choice-header'>" .
-        $descriptionHtml . $scoreHtml .
+    return "<div class='h5p-long-choice-header'>" .
+      $descriptionHtml . $scoreHtml .
       "</div>";
   }
 
@@ -73,12 +75,10 @@ class LongChoiceProcessor extends TypeProcessor {
    */
   private function generateBody($extras, array $correctAnswers, array $responses) {
     $choices = $extras->choices;
-
-    $extensions = isset($extras->extensions) ? $extras->extensions : (object) [];
+    $extensions = $extras->extensions ?? (object) [];
 
     // Determine if line-breaks extension exists.
-    $lineBreaks = isset($extensions->{'https://h5p.org/x-api/line-breaks'}) ?
-      $extensions->{'https://h5p.org/x-api/line-breaks'} : [];
+    $lineBreaks = $extensions->{'https://h5p.org/x-api/line-breaks'} ?? [];
     $lineBreakIndex = 0;
 
     $choicesHTML = [];
@@ -108,9 +108,8 @@ class LongChoiceProcessor extends TypeProcessor {
       }
     }
 
-    return
-      '<div class="h5p-long-choice-words">' .
-        implode(' ', $choicesHTML) .
+    return '<div class="h5p-long-choice-words">' .
+      implode(' ', $choicesHTML) .
       '</div>';
   }
 
@@ -118,12 +117,11 @@ class LongChoiceProcessor extends TypeProcessor {
    * Generate footer.
    */
   private function generateFooter() {
-    return
-      '<div class="h5p-long-choice-footer">' .
-        '<span class="h5p-long-choice-word h5p-long-choice-correct">' . t('Correct Answer') . '</span>' .
-        '<span class="h5p-long-choice-word h5p-long-choice-answered h5p-long-choice-correct">' .
-          t('Your correct answer') . '</span>' .
-        '<span class="h5p-long-choice-word h5p-long-choice-answered">' . t('Your incorrect answer') . '</span>' .
+    return '<div class="h5p-long-choice-footer">' .
+      '<span class="h5p-long-choice-word h5p-long-choice-correct">' . $this->t('Correct Answer') . '</span>' .
+      '<span class="h5p-long-choice-word h5p-long-choice-answered h5p-long-choice-correct">' .
+      $this->t('Your correct answer') . '</span>' .
+      '<span class="h5p-long-choice-word h5p-long-choice-answered">' . $this->t('Your incorrect answer') . '</span>' .
       '</div>';
   }
 

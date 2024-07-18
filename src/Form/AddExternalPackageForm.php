@@ -2,16 +2,76 @@
 
 namespace Drupal\opigno_module\Form;
 
+use Drupal\Component\Utility\Environment;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\File\FileSystemInterface;
 use Drupal\file\Entity\File;
 use Drupal\opigno_module\Controller\ExternalPackageController;
+use Drupal\opigno_scorm\OpignoScorm;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
 
 /**
  * Add External package form.
  */
 class AddExternalPackageForm extends FormBase {
+
+  /**
+   * The Opigno SCORM service.
+   *
+   * @var \Drupal\opigno_scorm\OpignoScorm
+   */
+  protected $scormService;
+
+  /**
+   * The file system service.
+   *
+   * @var \Drupal\Core\File\FileSystemInterface
+   */
+  protected $fileSystem;
+
+  /**
+   * The file storage.
+   *
+   * @var \Drupal\file\FileStorageInterface
+   */
+  protected $fileStorage;
+
+  /**
+   * AddExternalPackageForm constructor.
+   *
+   * @param \Drupal\opigno_scorm\OpignoScorm $scorm_service
+   *   The Opigno SCORM service.
+   * @param \Drupal\Core\File\FileSystemInterface $file_system
+   *   The file system service.
+   * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entity_type_manager
+   *   The entity type manager service.
+   *
+   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+   */
+  public function __construct(
+    OpignoScorm $scorm_service,
+    FileSystemInterface $file_system,
+    EntityTypeManagerInterface $entity_type_manager
+  ) {
+    $this->scormService = $scorm_service;
+    $this->fileSystem = $file_system;
+    $this->fileStorage = $entity_type_manager->getStorage('file');
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container) {
+    return new static(
+      $container->get('opigno_scorm.scorm'),
+      $container->get('file_system'),
+      $container->get('entity_type.manager')
+    );
+  }
 
   /**
    * {@inheritdoc}
@@ -24,7 +84,7 @@ class AddExternalPackageForm extends FormBase {
    * {@inheritdoc}
    */
   public function buildForm(array $form, FormStateInterface $form_state, $mode = NULL) {
-    $is_ppt = ($mode && $mode == 'ppt') ? TRUE : FALSE;
+    $is_ppt = $mode && $mode === 'ppt';
     if ($is_ppt) {
       $form_state->set('mode', $mode);
     }
@@ -35,10 +95,22 @@ class AddExternalPackageForm extends FormBase {
       '#required' => TRUE,
     ];
 
+    // Set the max upload file size to avoid to the same that is set on the
+    // server side to avoid errors.
+    $max_filesize = Environment::getUploadMaxSize();
+    $t_args = [
+      '%size' => format_size($max_filesize),
+    ];
     $form['package'] = [
       '#title' => $this->t('Package'),
       '#type' => 'file',
-      '#description' => !$is_ppt ? $this->t('Here you can upload external package. Allowed extensions: zip h5p') : $this->t('Here you can upload PowerPoint presentation file. Allowed extensions: ppt pptx'),
+      '#description' => !$is_ppt
+        ? $this->t('Here you can upload external package. Allowed extensions: zip h5p. Max file size: %size', $t_args)
+        : $this->t('Here you can upload PowerPoint presentation file. Allowed extensions: ppt pptx. Max file size: %size', $t_args),
+      '#upload_validators' => [
+        'file_validate_extensions' => !$is_ppt ? ['h5p zip'] : ['ppt pptx'],
+        'file_validate_size' => [$max_filesize],
+      ],
     ];
 
     $ajax_id = "ajax-form-entity-external-package";
@@ -76,34 +148,40 @@ class AddExternalPackageForm extends FormBase {
    */
   public function validateForm(array &$form, FormStateInterface $form_state) {
     // Validation is optional.
-    $file_field = "package";
+    $file_field = 'package';
     $storage = $form_state->getStorage();
-    $is_ppt = (isset($storage['mode']) && $storage['mode'] == 'ppt') ? TRUE : FALSE;
-    if (empty($_FILES['files']['name'][$file_field])) {
+    $is_ppt = isset($storage['mode']) && $storage['mode'] === 'ppt';
+
+    $files = $this->getRequest()->files->get('files', []);
+    $uploaded = $files[$file_field] ?? NULL;
+
+    if (!$uploaded instanceof UploadedFile || !$uploaded->getClientOriginalName()) {
       // Only need to validate if the field actually has a file.
       $form_state->setError(
-        $form['package'],
+        $form[$file_field],
         $this->t("The file was not uploaded.")
       );
     }
 
     // Prepare folder.
-    $temporary_file_path = !$is_ppt ? 'public://external_packages' : 'public://' . ExternalPackageController::getPptConversionDir();
-    \Drupal::service('file_system')->prepareDirectory($temporary_file_path, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
+    $temporary_file_path = !$is_ppt
+      ? 'public://external_packages'
+      : 'public://' . ExternalPackageController::getPptConversionDir();
+    $this->fileSystem->prepareDirectory(
+      $temporary_file_path,
+      FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY
+    );
 
     // Prepare file validators.
-    $extensions = !$is_ppt ? ['h5p zip'] : ['ppt pptx'];
-    $validators = [
-      'file_validate_extensions' => $extensions,
-    ];
+    $validators = $form[$file_field]['#upload_validators'];
     // Validate file.
     if ($is_ppt) {
       $ppt_dir = ExternalPackageController::getPptConversionDir();
-      $file_default_scheme = \Drupal::config('system.file')->get('default_scheme');
-      $public_files_real_path = \Drupal::service('file_system')->realpath($file_default_scheme . "://");
+      $file_default_scheme = $this->config('system.file')->get('default_scheme');
+      $public_files_real_path = $this->fileSystem->realpath($file_default_scheme . "://");
       $ppt_dir_real_path = $public_files_real_path . '/' . $ppt_dir;
 
-      $file = file_save_upload($file_field, $validators, $temporary_file_path, NULL, FileSystemInterface::EXISTS_REPLACE);
+      $file = file_save_upload($file_field, $validators, $temporary_file_path);
 
       // Rename uploaded file - remove special chars.
       $file_new = $file[0];
@@ -117,8 +195,8 @@ class AddExternalPackageForm extends FormBase {
       if (!empty($file_new)) {
         // Actions on ppt(x) file upload.
         $ppt_dir = ExternalPackageController::getPptConversionDir();
-        $file_default_scheme = \Drupal::config('system.file')->get('default_scheme');
-        $public_files_real_path = \Drupal::service('file_system')->realpath($file_default_scheme . "://");
+        $file_default_scheme = $this->config('system.file')->get('default_scheme');
+        $public_files_real_path = $this->fileSystem->realpath($file_default_scheme . "://");
         $ppt_dir_real_path = $public_files_real_path . '/' . $ppt_dir;
 
         $this->logger('ppt_converter')->notice('$ppt_dir_real_path: ' . $ppt_dir_real_path);
@@ -127,7 +205,7 @@ class AddExternalPackageForm extends FormBase {
 
         if ($images) {
 
-          \Drupal::logger('ppt_converter')->notice('$images: <pre><code>' . print_r($images, TRUE) . '</code></pre>');
+          $this->logger('ppt_converter')->notice('$images: <pre><code>' . print_r($images, TRUE) . '</code></pre>');
 
           // Create H5P package in 'sites/default/files/external_packages_ppt'.
           ExternalPackageController::createH5pCoursePresentationPackage($images, $ppt_dir_real_path, $form_state->getValue('name'));
@@ -135,7 +213,7 @@ class AddExternalPackageForm extends FormBase {
 
         if (file_exists($temporary_file_path . '/ppt-content-import.h5p')) {
           // Replace form uploaded file with converted h5p content file.
-          $file_new = File::load($file[0]->id());
+          $file_new = $this->fileStorage->load($file_new->id());
           $file_new->setFilename('ppt-content-import.h5p');
           $file_new->setFileUri($temporary_file_path . '/ppt-content-import.h5p');
           $file_new->setMimeType('application/octet-stream');
@@ -146,12 +224,12 @@ class AddExternalPackageForm extends FormBase {
       }
     }
     else {
-      $file = file_save_upload($file_field, $validators, $temporary_file_path, NULL, FileSystemInterface::EXISTS_REPLACE);
+      $file = file_save_upload($file_field, $validators, $temporary_file_path);
     }
 
     if (!$file[0]) {
       return $form_state->setRebuild();
-    };
+    }
 
     // Validate Scorm and Tincan packages.
     $this->validateZipPackage($form, $form_state, $file[0]);
@@ -161,13 +239,22 @@ class AddExternalPackageForm extends FormBase {
 
   }
 
-  private function validateZipPackage($form, FormStateInterface $form_state, File $file) {
-    /* @var \Drupal\opigno_scorm\OpignoScorm $scorm_controller */
-    $scorm_controller = \Drupal::service('opigno_scorm.scorm');
+  /**
+   * Zip packages validator.
+   *
+   * @param array $form
+   *   The form.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The form state object.
+   * @param \Drupal\file\Entity\File $file
+   *   The file to be validated.
+   */
+  private function validateZipPackage(array $form, FormStateInterface $form_state, File $file) {
     $file_extension = substr(strrchr($file->getFilename(), '.'), 1);
     if ($file_extension == 'zip') {
-      $scorm_controller->unzipPackage($file);
-      $extract_dir = 'public://opigno_scorm_extracted/scorm_' . $file->id();
+      $base_path = 'public://opigno_scorm_extracted';
+      $extract_dir = "$base_path/scorm_" . $file->id();
+      $this->scormService->unzipPackage($file, $base_path);
       // This is a standard: these files must always be here.
       $scorm_file = $extract_dir . '/imsmanifest.xml';
       $tincan_file = $extract_dir . '/tincan.xml';
@@ -177,17 +264,18 @@ class AddExternalPackageForm extends FormBase {
         $files = scandir($extract_dir);
         $count_files = count($files);
 
-        if ($count_files == 3 && is_dir($extract_dir. '/' . $files[2])) {
-          $subfolder_files = scandir($extract_dir. '/' . $files[2]);
+        if ($count_files == 3 && is_dir($extract_dir . '/' . $files[2])) {
+          $subfolder_files = scandir($extract_dir . '/' . $files[2]);
 
           if (in_array('imsmanifest.xml', $subfolder_files)) {
-            $source = $extract_dir. '/' . $files[2];
+            $source = $extract_dir . '/' . $files[2];
 
             $i = new \RecursiveDirectoryIterator($source);
-            foreach($i as $f) {
-              if($f->isFile()) {
+            foreach ($i as $f) {
+              if ($f->isFile()) {
                 rename($f->getPathname(), $extract_dir . '/' . $f->getFilename());
-              } else if($f->isDir()) {
+              }
+              elseif ($f->isDir()) {
                 rename($f->getPathname(), $extract_dir . '/' . $f->getFilename());
                 unlink($f->getPathname());
               }
@@ -195,7 +283,6 @@ class AddExternalPackageForm extends FormBase {
             $validation = TRUE;
           }
         }
-
 
         if ($validation == FALSE) {
           $form_state->setError(

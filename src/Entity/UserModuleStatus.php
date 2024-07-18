@@ -7,6 +7,7 @@ use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\Entity\ContentEntityBase;
 use Drupal\Core\Entity\EntityChangedTrait;
 use Drupal\Core\Entity\EntityTypeInterface;
+use Drupal\group\Entity\GroupInterface;
 use Drupal\user\UserInterface;
 
 /**
@@ -63,6 +64,28 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
     $values += [
       'user_id' => \Drupal::currentUser()->id(),
     ];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function preSave(EntityStorageInterface $storage) {
+    parent::preSave($storage);
+    // Set the LP attempt.
+    if ($this->getLearningPathAttempt()) {
+      return;
+    }
+
+    $lp = $this->getLearningPath();
+    if (!$lp instanceof GroupInterface) {
+      return;
+    }
+
+    $uid = (int) $this->getOwnerId();
+    $lp_attempt_id = OpignoModule::getLastTrainingAttempt($uid, (int) $lp->id());
+    if ($lp_attempt_id) {
+      $this->setLearningPathAttempt($lp_attempt_id);
+    }
   }
 
   /**
@@ -128,23 +151,24 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function isPublished() {
+  public function isPublished(): bool {
     return (bool) $this->getEntityKey('status');
   }
 
   /**
    * {@inheritdoc}
    */
-  public function setPublished($published) {
-    $this->set('status', $published ? TRUE : FALSE);
+  public function setPublished(bool $published): UserModuleStatusInterface {
+    $this->set('status', $published);
     return $this;
   }
 
   /**
    * {@inheritdoc}
    */
-  public function getModule() {
-    return $this->get('module')->entity;
+  public function getModule(): ?OpignoModuleInterface {
+    $module = $this->hasField('module') ? $this->get('module')->entity : NULL;
+    return $module instanceof OpignoModuleInterface ? $module : NULL;
   }
 
   /**
@@ -158,7 +182,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function setFinished($timestamp) {
+  public function setFinished($timestamp): UserModuleStatusInterface {
     $this->set('finished', $timestamp);
     return $this;
   }
@@ -226,7 +250,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function isFinished() {
+  public function isFinished(): bool {
     return (bool) $this->finished->value != 0;
   }
 
@@ -234,7 +258,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
    * {@inheritdoc}
    */
   public function isEvaluated() {
-    return (bool) $this->getEntityKey('evaluated');
+    return (bool) $this->evaluated->value;
   }
 
   /**
@@ -248,7 +272,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function setScore($value) {
+  public function setScore(string | int $value): UserModuleStatusInterface {
     $this->set('score', $value);
     return $this;
   }
@@ -256,14 +280,14 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function getScore() {
-    return $this->get('score')->value;
+  public function getScore(): int {
+    return (int) $this->get('score')->value;
   }
 
   /**
    * {@inheritdoc}
    */
-  public function calculateScore() {
+  public function calculateScore(): int {
     $score = 0;
     $answers = $this->getAnswers();
     foreach ($answers as $answer) {
@@ -296,7 +320,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function calculateMaxScore() {
+  public function calculateMaxScore(): int {
     $max_score = 0;
     /** @var \Drupal\Core\Database\Connection $db_connection */
     $db_connection = \Drupal::service('database');
@@ -352,7 +376,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
-  public function calculateBestScore($latest_cert_date = NULL, $group_id = NULL) {
+  public function calculateBestScore($latest_cert_date = NULL, $group_id = NULL): int {
     /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
     $module = $this->getModule();
     $user = $this->getOwner();
@@ -365,7 +389,7 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
     /** @var \Drupal\opigno_module\Entity\UserModuleStatus $user_attempt */
     foreach ($user_attempts as $user_attempt) {
       // Get the scores.
-      $actual_score = (int) $user_attempt->getScore();
+      $actual_score = $user_attempt->getScore();
       // Clamp score.
       $actual_score = max(0, $actual_score);
       $actual_score = min(100, $actual_score);
@@ -465,6 +489,46 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
   /**
    * {@inheritdoc}
    */
+  public function getLearningPath(): ?GroupInterface {
+    $lp = $this->hasField('learning_path') ? $this->get('learning_path')->entity : NULL;
+    return $lp instanceof GroupInterface && $lp->bundle() === 'learning_path' ? $lp : NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getLearningPathAttempt(bool $load = FALSE) {
+    $field = 'lp_status';
+    if (!$this->hasField($field) || $this->get($field)->isEmpty()) {
+      return NULL;
+    }
+
+    $lp_status = $this->get($field)->getString();
+    return $load ? \Drupal::entityTypeManager()->getStorage('user_lp_status')->load($lp_status) : $lp_status;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function setLearningPathAttempt(int $lp_status): UserModuleStatusInterface {
+    $field = 'lp_status';
+    if ($this->hasField($field)) {
+      $this->set($field, $lp_status);
+    }
+
+    return $this;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function isInCurrentLpAttempt(int $uid, int $gid): bool {
+    return OpignoModule::getLastTrainingAttempt($uid, $gid) === $this->getLearningPathAttempt();
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public static function baseFieldDefinitions(EntityTypeInterface $entity_type) {
     $fields = parent::baseFieldDefinitions($entity_type);
 
@@ -546,6 +610,17 @@ class UserModuleStatus extends ContentEntityBase implements UserModuleStatusInte
       ->setDescription(t('The learning path whose context the module was taken in.'))
       ->setSetting('target_type', 'group')
       ->setSetting('target_bundles', ['learning_path' => 'learning_path']);
+
+    // The user_lp_status entity is provided by the opigno_learning_path module.
+    // This workaround is needed to fix the order of module enabling on fresh
+    // installs.
+    if (\Drupal::moduleHandler()->moduleExists('opigno_learning_path')) {
+      $fields['lp_status'] = BaseFieldDefinition::create('entity_reference')
+        ->setLabel(t('Learning path status'))
+        ->setDescription(t('The learning path status entity the current module attempt belongs to'))
+        ->setSetting('target_type', 'user_lp_status')
+        ->setSetting('target_bundles', ['user_lp_status' => 'user_lp_status']);
+    }
 
     return $fields;
   }

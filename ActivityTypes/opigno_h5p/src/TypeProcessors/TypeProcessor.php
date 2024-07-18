@@ -2,18 +2,37 @@
 
 namespace Drupal\opigno_h5p\TypeProcessors;
 
-use stdClass;
+use Drupal\Core\StringTranslation\StringTranslationTrait;
 
 /**
- * Class TypeProcessor.
+ * Defines the base class for the H5P type processors.
+ *
+ * @package Drupal\opigno_h5p\TypeProcessors
  */
 abstract class TypeProcessor {
 
-  private $style;
+  use StringTranslationTrait;
 
-  protected $xapiData;
+  /**
+   * The CSS library name.
+   *
+   * @var string
+   */
+  private string $style;
 
-  protected $disableScoring;
+  /**
+   * The xAPI data.
+   *
+   * @var object
+   */
+  protected object $xapiData;
+
+  /**
+   * If scoring disabled or not.
+   *
+   * @var bool
+   */
+  protected bool $disableScoring;
 
   /**
    * Generate HTML for report.
@@ -26,19 +45,22 @@ abstract class TypeProcessor {
    * @return string
    *   HTML as string.
    */
-  public function generateReport($xapiData, $disableScoring = FALSE) {
-    $this->xapiData       = $xapiData;
+  public function generateReport(object $xapiData, bool $disableScoring = FALSE): string {
+    $this->xapiData = $xapiData;
     $this->disableScoring = $disableScoring;
 
     // Grab description.
     $description = $this->getDescription($xapiData);
 
     // Grab correct response pattern.
-    $crp = $this->getCRP($xapiData);
+    $crp = $this->getCrp($xapiData);
 
     // Grab extras.
-    $extras        = $this->getExtras($xapiData);
-    $scoreSettings = $this->getScoreSettings($xapiData);
+    $extras = $this->getExtras($xapiData);
+    // Currently below is extra information on results page.
+    // Possibly we will get it back later.
+    // $scoreSettings = $this->getScoreSettings($xapiData);
+    $scoreSettings = NULL;
 
     return $this->generateHTML(
       $description,
@@ -102,8 +124,8 @@ abstract class TypeProcessor {
    */
   protected function generateScoreHtml($scoreSettings) {
     $showScores = isset($scoreSettings->rawScore)
-                  && isset($scoreSettings->maxScore)
-                  && !$this->disableScoring;
+      && isset($scoreSettings->maxScore)
+      && !$this->disableScoring;
 
     if (!$showScores) {
       return '';
@@ -142,7 +164,7 @@ abstract class TypeProcessor {
    * Decode extras from xAPI data.
    */
   protected function getExtras($xapiData) {
-    $extras = ($xapiData->additionals === '' ? new stdClass() : json_decode($xapiData->additionals));
+    $extras = ($xapiData->additionals === '' ? new \stdClass() : json_decode($xapiData->additionals));
     if (isset($xapiData->children)) {
       $extras->children = $xapiData->children;
     }
@@ -166,7 +188,7 @@ abstract class TypeProcessor {
    * @return mixed
    *   XAPI data response pattern.
    */
-  protected function getCRP($xapiData) {
+  protected function getCrp($xapiData) {
     return json_decode($xapiData->correct_responses_pattern, TRUE);
   }
 
@@ -188,19 +210,25 @@ abstract class TypeProcessor {
    *
    * @param string $description
    *   Description.
-   * @param array $crp
+   * @param array|null $crp
    *   Correct responses pattern.
    * @param string $response
    *   User given answer.
-   * @param object $extras
+   * @param object|null $extras
    *   Additional data.
-   * @param object $scoreSettings
+   * @param object|null $scoreSettings
    *   Score settings.
    *
    * @return string
    *   HTML for the report.
    */
-  abstract function generateHTML($description, $crp, $response, $extras, $scoreSettings);
+  abstract public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras,
+    ?object $scoreSettings
+  ): string;
 
   /**
    * Set style used by the processor.
@@ -208,7 +236,7 @@ abstract class TypeProcessor {
    * @param string $style
    *   Path to style.
    */
-  protected function setStyle($style) {
+  protected function setStyle(string $style) {
     $this->style = $style;
   }
 
@@ -218,7 +246,7 @@ abstract class TypeProcessor {
    * @return string
    *   Library relative path to CSS.
    */
-  public function getStyle() {
+  public function getStyle(): string {
     return $this->style;
   }
 

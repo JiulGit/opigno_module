@@ -2,6 +2,7 @@
 
 namespace Drupal\opigno_module\Entity;
 
+use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityStorageInterface;
 use Drupal\Core\Entity\RevisionableContentEntityBase;
 use Drupal\Core\Field\BaseFieldDefinition;
@@ -9,10 +10,13 @@ use Drupal\Core\Entity\EntityChangedTrait;
 use Drupal\Core\Entity\EntityTypeInterface;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Session\AccountInterface;
+use Drupal\file\FileInterface;
 use Drupal\group\Entity\Group;
+use Drupal\media\MediaInterface;
 use Drupal\opigno_group_manager\OpignoGroupContext;
 use Drupal\opigno_learning_path\Entity\LPModuleAvailability;
 use Drupal\opigno_learning_path\LearningPathAccess;
+use Drupal\opigno_learning_path\LPStatusInterface;
 use Drupal\user\UserInterface;
 use Drupal\user\Entity\User;
 
@@ -77,11 +81,15 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
 
   /**
    * Static cache of user attempts.
+   *
+   * @var array
    */
   protected $userAttempts = [];
 
   /**
    * Static cache of user active attempt.
+   *
+   * @var array
    */
   protected $userActiveAttempt = [];
 
@@ -94,6 +102,8 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
 
   /**
    * Static cache of activities.
+   *
+   * @var array
    */
   protected $activities = [];
 
@@ -298,23 +308,19 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
    * Get feedback results options.
    */
   public function getResultsOptions() {
-    /* @var $connection \Drupal\Core\Database\Connection */
-    $connection = \Drupal::service('database');
-    $select_query = $connection->select('opigno_module_result_options', 'omro')
+    $select_query = \Drupal::database()->select('opigno_module_result_options', 'omro')
       ->fields('omro')
       ->condition('module_id', $this->id())
       ->condition('module_vid', $this->getRevisionId());
-    $options = $select_query->execute()->fetchAll();
-    return $options;
+
+    return $select_query->execute()->fetchAll();
   }
 
   /**
    * Insert feedback results options.
    */
   public function insertResultsOptions(FormStateInterface $form_state) {
-    /* @var $connection \Drupal\Core\Database\Connection */
-    $connection = \Drupal::service('database');
-    $insert_query = $connection->insert('opigno_module_result_options')
+    $insert_query = \Drupal::database()->insert('opigno_module_result_options')
       ->fields([
         'module_id',
         'module_vid',
@@ -349,10 +355,8 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
    * Update feedback results options.
    */
   public function updateResultsOptions(FormStateInterface $form_state) {
-    /* @var $connection \Drupal\Core\Database\Connection */
-    $connection = \Drupal::service('database');
     // Remove existing options.
-    $connection->delete('opigno_module_result_options')
+    \Drupal::database()->delete('opigno_module_result_options')
       ->condition('module_id', $this->id())
       ->condition('module_vid', $this->getRevisionId())
       ->execute();
@@ -402,9 +406,7 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
             $message = $config->get('availability_unavailable_message');
           }
 
-          if (\Drupal::moduleHandler()->moduleExists('token')) {
-            $message = \Drupal::token()->replace($message, ['opigno_module' => $this]);
-          }
+          $message = \Drupal::token()->replace($message, ['opigno_module' => $this]);
 
           $availability = [
             'open' => FALSE,
@@ -418,30 +420,41 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
   }
 
   /**
-   * Get loaded statuses for specified user.
-   *
-   * @throws \Exception
+   * {@inheritdoc}
    */
-  public function getModuleAttempts(AccountInterface $user, $range = NULL, $latest_cert_date = NULL, $finished = FALSE, $group_id = NULL) {
-    $key = $this->id() . '_' . $user->id();
+  public function getModuleAttempts(
+    AccountInterface $user,
+    $range = NULL,
+    $latest_cert_date = NULL,
+    bool $finished = FALSE,
+    $group_id = NULL
+  ) {
+    $uid = (int) $user->id();
+    $key = $this->id() . '_' . $uid;
     $group_id = $this->getGroupIdCurrentTraining($group_id);
+    $last_lp_attempt = static::getLastTrainingAttempt($uid, $group_id);
+
     if (isset($group_id)) {
 
       $key .= '_' . $group_id;
-      $key_base = $key;
 
       if (isset($range)) {
         $key .= '_' . $range;
+      }
+
+      if ($last_lp_attempt) {
+        $key .= '_' . $last_lp_attempt;
       }
 
       if (array_key_exists($key, $this->userAttempts)) {
         return $this->userAttempts[$key];
       }
 
+      $key_base = $key;
       $status_storage = static::entityTypeManager()->getStorage('user_module_status');
       $query = $status_storage->getQuery();
       $query->condition('module', $this->id())
-        ->condition('user_id', $user->id());
+        ->condition('user_id', $uid);
       $query->condition('learning_path', $group_id);
 
       if ($finished) {
@@ -452,6 +465,10 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
         $query->condition('started', $latest_cert_date, '>=');
       }
 
+      if ($last_lp_attempt) {
+        $query->condition('lp_status', $last_lp_attempt);
+      }
+
       $status_ids = $query->execute();
       if ($status_ids) {
         $status_entities = $status_storage->loadMultiple($status_ids);
@@ -460,10 +477,13 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
         // queries for potentially the same entity.
         $max_id = max(array_keys($status_ids));
         $this->userAttempts[$key_base . '_last'] = [$max_id => $status_entities[$max_id]];
-
         $max_score = 0;
         $best_entity = FALSE;
-
+        /** @var \Drupal\opigno_module\Entity\UserModuleStatus[] $status_entities */
+        $status_entities = array_filter($status_entities, function ($attempt) {
+          return !$attempt->isEvaluated() || ($attempt->isEvaluated() && $this->hasAnsweredActivities($attempt));
+        });
+        /** @var \Drupal\opigno_module\Entity\UserModuleStatus[] $entity */
         foreach ($status_entities as $entity) {
           if ($entity->getScore() >= $max_score) {
             $max_score = $entity->getScore();
@@ -483,28 +503,37 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
         $this->userAttempts[$key_base . '_last'] = [];
       }
 
-      return isset($this->userAttempts[$key]) ? $this->userAttempts[$key] : [];
+      return $this->userAttempts[$key] ?? [];
     }
 
     return [];
   }
 
   /**
-   * Get entity if user didn't finish module.
-   *
-   * @param \Drupal\Core\Session\AccountInterface $user
-   *   User entity object.
-   *
-   * @return \Drupal\Core\Entity\EntityInterface|null
-   *   Entity interface.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
-   * @throws \Exception
+   * Check if user has answered all activities.
    */
-  public function getModuleActiveAttempt(AccountInterface $user, $activity_link_type = NULL, $group_id = NULL) {
+  public function hasAnsweredActivities(UserModuleStatus $attempt) {
+    $answers = [];
+    /** @var \Drupal\opigno_module\Entity\OpignoModule $module */
+    $module = $attempt->getModule();
+    $activities = $module->getModuleActivities(TRUE);
+    $user = $attempt->getOwner();
+    foreach ($activities as $activity) {
+      $answers[] = $activity->getUserAnswer($module, $attempt, $user);
+    }
+    return count(array_filter($answers)) == count($activities);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getModuleActiveAttempt(
+    AccountInterface $user,
+    ?string $activity_link_type = NULL,
+    $group_id = NULL
+  ): ?EntityInterface {
     $key = $this->id() . '_' . $user->id();
-    $group_id = $this->getGroupIdCurrentTraining($group_id);
+    $group_id = $group_id ?? $this->getGroupIdCurrentTraining($group_id);
     if (!$group_id) {
       return NULL;
     }
@@ -529,18 +558,92 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
       }
     }
 
+    $uid = (int) $user->id();
+    // First check if any unfinished module attempt that doesn't relate to any
+    // LP attempt exist.
+    $unfinished_attempt = $this->getUnfinishedAttempt($uid, $group_id);
+    if ($unfinished_attempt) {
+      $this->userActiveAttempt[$key] = $unfinished_attempt;
+    }
+    else {
+      $lp = Group::load($group_id);
+      $lp_attempt = $this->getTrainingActiveAttempt($user, $lp);
+      $status_storage = static::entityTypeManager()->getStorage('user_module_status');
+      $query = $status_storage->getQuery();
+      $query->condition('module', $this->id())
+        ->condition('user_id', $user->id())
+        ->condition('learning_path', $group_id)
+        ->condition('finished', 0);
+      if ($lp_attempt instanceof LPStatusInterface) {
+        $query->condition('lp_status', $lp_attempt->id());
+      }
+      $module_statuses = $query->range(0, 1)->execute();
+
+      $this->userActiveAttempt[$key] = !empty($module_statuses) ? $status_storage->load(key($module_statuses)) : NULL;
+    }
+
+    return $this->userActiveAttempt[$key];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getLastModuleAttempt(int $uid, $gid, bool $load = FALSE) {
+    $lp_attempt = OpignoModule::getLastTrainingAttempt($uid, $gid);
     $status_storage = static::entityTypeManager()->getStorage('user_module_status');
     $query = $status_storage->getQuery();
-    $module_statuses = $query
-      ->condition('module', $this->id())
-      ->condition('user_id', $user->id())
-      ->condition('learning_path', $group_id)
-      ->condition('finished', 0)
+    $query->condition('module', $this->id())
+      ->condition('user_id', $uid)
+      ->condition('learning_path', $gid);
+    if ($lp_attempt) {
+      $query->condition('lp_status', $lp_attempt);
+    }
+    $module_attempt = $query
+      ->sort('started', 'DESC')
       ->range(0, 1)
       ->execute();
 
-    $this->userActiveAttempt[$key] = !empty($module_statuses) ? $status_storage->load(key($module_statuses)) : NULL;
-    return $this->userActiveAttempt[$key];
+    $module_attempt = reset($module_attempt);
+    if (!$module_attempt) {
+      return NULL;
+    }
+
+    return $load ? $status_storage->load($module_attempt) : $module_attempt;
+  }
+
+  /**
+   * Checks if the unfinished attempts exist or not.
+   *
+   * This is needed to update the last unfinished module attempt and add a
+   * reference to the current LP attempt.
+   *
+   * @param int $uid
+   *   The user ID to check the unfinished module attempt for.
+   * @param int|string $gid
+   *   The group ID to check the unfinished module attempt for.
+   *
+   * @return \Drupal\opigno_module\Entity\UserModuleStatusInterface|null
+   *   The unfinished module attempt if it exists, NULL otherwise.
+   *
+   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+   */
+  protected function getUnfinishedAttempt(int $uid, int|string $gid): ?UserModuleStatusInterface {
+    $storage = \Drupal::entityTypeManager()->getStorage('user_module_status');
+    $unfinished = $storage->getQuery()
+      ->condition('module', $this->id())
+      ->condition('user_id', $uid)
+      ->condition('learning_path', $gid)
+      ->condition('finished', 0)
+      ->notExists('lp_status')
+      ->execute();
+
+    $attempt = NULL;
+    if ($unfinished) {
+      $attempt = $storage->load(reset($unfinished));
+    }
+
+    return $attempt instanceof UserModuleStatusInterface ? $attempt : NULL;
   }
 
   /**
@@ -549,15 +652,17 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
    * @param \Drupal\user\Entity\User $user
    *   User entity.
    *
-   * @return numeric
+   * @return float|int
    *   Best score result.
+   *
+   * @throws \Exception
    */
   public function getBestScore(User $user) {
     // For each attempt, check the score and save the best one.
     $user_attempts = $this->getModuleAttempts($user, 'best');
     $best_score = 0;
 
-    /* @var \Drupal\opigno_module\Entity\UserModuleStatus $user_attempt */
+    /** @var \Drupal\opigno_module\Entity\UserModuleStatus $user_attempt */
     foreach ($user_attempts as $user_attempt) {
       // Get the scores.
       $actual_score = $user_attempt->getAttemptScore();
@@ -575,13 +680,17 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
    *
    * @param \Drupal\Core\Session\AccountInterface $account
    *   User account object.
-   * @param int $latest_cert_date
+   * @param int|null $latest_cert_date
    *   The last date when was attempt.
+   * @param int|string|null $group_id
+   *   The module-related group to get the score for.
    *
    * @return int
    *   Score in percents depends of OpignoModule keep_results option.
+   *
+   * @throws \Exception
    */
-  public function getUserScore(AccountInterface $account, $latest_cert_date = NULL, $group_id = NULL) {
+  public function getUserScore(AccountInterface $account, ?int $latest_cert_date = NULL, $group_id = NULL) {
     $group_id = $this->getGroupIdCurrentTraining($group_id);
     $attempts = $this->getModuleAttempts($account, 'last', $latest_cert_date, FALSE, $group_id);
     if (!$attempts) {
@@ -601,7 +710,7 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
       // For these options get best score.
       case 'best':
       case 'all':
-        $score = (int) $last_attempt->calculateBestScore($latest_cert_date, $group_id);
+        $score = $last_attempt->isFinished() ? (int) $last_attempt->calculateBestScore($latest_cert_date, $group_id) : $last_attempt->getScore();
         break;
     }
     // Clamp score.
@@ -637,20 +746,9 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
   }
 
   /**
-   * Get training attempt if user didn't finish training.
-   *
-   * @param \Drupal\Core\Session\AccountInterface $user
-   *   User entity object.
-   * @param \Drupal\group\Entity\Group $group
-   *   Group object.
-   *
-   * @return \Drupal\Core\Entity\EntityInterface|null
-   *   Entity interface.
-   *
-   * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
-   * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+   * {@inheritdoc}
    */
-  public function getTrainingActiveAttempt(AccountInterface $user, Group $group) {
+  public function getTrainingActiveAttempt(AccountInterface $user, Group $group): ?EntityInterface {
     $key = $group->id() . '_' . $user->id();
 
     if (array_key_exists($key, $this->userTrainingActiveAttempt)) {
@@ -662,7 +760,7 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
     $training_statuses = $query
       ->condition('gid', $group->id())
       ->condition('uid', $user->id())
-      ->condition('finished', 0)
+      ->condition('finalized', 0)
       ->range(0, 1)
       ->execute();
 
@@ -671,16 +769,37 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
   }
 
   /**
-   * Get activities related to specific module.
-   *
-   * @return OpignoActivity[]|null
+   * {@inheritdoc}
    */
-  public function getModuleActivities($full = FALSE) {
+  public static function getLastTrainingAttempt(int $uid, $gid, bool $load = FALSE) {
+    if (!$gid) {
+      return NULL;
+    }
+
+    $lp_status_storage = \Drupal::entityTypeManager()->getStorage('user_lp_status');
+    $lp_status = $lp_status_storage->getQuery()
+      ->condition('gid', $gid)
+      ->condition('uid', $uid)
+      ->sort('started', 'DESC')
+      ->range(0, 1)
+      ->execute();
+    $lp_status = reset($lp_status);
+
+    if (!$load || !$lp_status) {
+      return $lp_status ?: NULL;
+    }
+
+    $loaded = $lp_status_storage->load($lp_status);
+    return $loaded instanceof LPStatusInterface ? $loaded : NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getModuleActivities(bool $full = FALSE): ?array {
     if (empty($this->activities)) {
-      /* @todo join table with activity revisions */
-      /* @var $db_connection \Drupal\Core\Database\Connection */
-      $db_connection = \Drupal::service('database');
-      $query = $db_connection->select('opigno_activity', 'oa');
+      // @todo Join table with activity revisions.
+      $query = \Drupal::database()->select('opigno_activity', 'oa');
       $query->fields('oafd', [
         'id',
         'vid',
@@ -737,9 +856,7 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
     }
 
     $activities = [];
-    /* @var $db_connection \Drupal\Core\Database\Connection */
-    $db_connection = \Drupal::service('database');
-    $query = $db_connection->select('opigno_activity', 'oa');
+    $query = \Drupal::database()->select('opigno_activity', 'oa');
     $query->fields('oafd', [
       'id',
       'vid',
@@ -833,6 +950,22 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
   }
 
   /**
+   * {@inheritdoc}
+   */
+  public function getMaxActivitiesScore(): int {
+    $activities = $this->getModuleActivities();
+    $max_score = 0;
+
+    if ($activities) {
+      foreach ($activities as $activity) {
+        $max_score += $activity->max_score ?? 0;
+      }
+    }
+
+    return $max_score;
+  }
+
+  /**
    * Get option to know which result need to be saved on Database.
    *
    * @return string
@@ -846,6 +979,71 @@ class OpignoModule extends RevisionableContentEntityBase implements OpignoModule
     ];
     $option = $this->get('keep_results')->value;
     return $keep_results_options[$option];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getBadgeUrl(): ?string {
+    $media = $this->get('badge_media_image')->referencedEntities();
+    $image_item = reset($media);
+    if (!$image_item instanceof MediaInterface
+      || !$image_item->hasField('field_media_image')
+      || $image_item->get('field_media_image')->isEmpty()
+    ) {
+      return NULL;
+    }
+
+    $badge_image = $image_item->get('field_media_image')->referencedEntities();
+    $badge_image = reset($badge_image);
+
+    return $badge_image instanceof FileInterface ? $badge_image->getFileUri() : NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getAllowedAttemptsNumber(): int {
+    return $this->hasField('takes') ? (int) $this->get('takes')->getString() : 0;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getTakenAttemptsNumber(
+    ?AccountInterface $account = NULL,
+    ?int $range = NULL,
+    ?int $latest_cert_date = NULL,
+    bool $finished = FALSE,
+    ?int $gid = NULL
+  ): int {
+    $account = $account ?? \Drupal::currentUser();
+    $user_attempts = $this->getModuleAttempts($account, $range, $latest_cert_date, $finished, $gid);
+
+    return count($user_attempts);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function canCreateNewAttempt(
+    ?AccountInterface $account = NULL,
+    ?int $range = NULL,
+    ?int $latest_cert_date = NULL,
+    bool $finished = FALSE,
+    ?int $gid = NULL
+  ): bool {
+    $account = $account ?? \Drupal::currentUser();
+    $allowed = $this->getAllowedAttemptsNumber();
+
+    // The unlimited module attempts.
+    if (!$allowed) {
+      return TRUE;
+    }
+
+    $taken = $this->getTakenAttemptsNumber($account, $range, $latest_cert_date, $finished, $gid);
+
+    return $allowed > $taken;
   }
 
   /**

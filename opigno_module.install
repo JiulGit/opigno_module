@@ -7,9 +7,11 @@
 
 use Drupal\Core\Config\FileStorage;
 use Drupal\Core\Entity\EntityStorageException;
+use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\user\Entity\Role;
 use Drupal\user\RoleInterface;
 use Drupal\opigno_module\Form\ModuleH5PAdminSettingsForm;
+use Drupal\opigno_module\Traits\FileSecurity;
 
 /**
  * Implements hook_schema().
@@ -331,16 +333,15 @@ function opigno_module_requirements($phase) {
  * Update views 'groups list'.
  */
 function opigno_module_update_9001() {
-  _opigno_module_apply_update('module', 'opigno_module', 'config/optional', ['views.view.groups_list']);
-  _opigno_module_apply_update('module', 'opigno_module', 'config/rewrite', ['views.view.user_admin_people']);
+  _opigno_module_apply_update('opigno_module', 'config/optional', ['views.view.groups_list']);
+  _opigno_module_apply_update('opigno_module', 'config/rewrite', ['views.view.user_admin_people']);
 }
 
 /**
  * Configs update helper function.
  */
-function _opigno_module_apply_update($type, $name, $path, $ymls) {
-  $module_path = \Drupal::service('extension.list.module')->getPath($name);
-  $theme_path = sprintf("%s/%s/", $module_path, $path);
+function _opigno_module_apply_update($name, $path, $ymls) {
+  $theme_path = sprintf("%s/%s/", \Drupal::service('extension.list.module')->getPath($name), $path);
   $config_factory = \Drupal::configFactory();
   $config_storage = \Drupal::service('config.storage');
   $configs = [];
@@ -358,4 +359,114 @@ function _opigno_module_apply_update($type, $name, $path, $ymls) {
       \Drupal::messenger()->addWarning(t('Incorrect data of @config', ['@config' => $config]));
     }
   }
+}
+
+/**
+ * Added htaccess to Opigno folders.
+ */
+function opigno_module_update_9002() {
+  // Get all list of exising opigno folders.
+  if ($files = \Drupal::service('file_system')
+    ->scanDirectory('public://', '/(opigno.*)|(external_package_extracted)/', ['recurse' => FALSE])) {
+    foreach ($files as $file) {
+      if (is_dir($file->uri)) {
+        // Check if for some reason htaccess already exists,
+        // could be a potential risk of script execution.
+        $subfiles = @scandir($file->uri, SCANDIR_SORT_NONE);
+        if (is_array($subfiles)) {
+          foreach ($subfiles as $subfile) {
+            if ($subfile === '.htaccess') {
+              $file_path = $file->uri . '/' . $subfile;
+              // Delete existing htaccess.
+              \Drupal::service('file_system')->unlink($file_path);
+            }
+          }
+        }
+
+        // Apply a new htaccess that blocks all execution.
+        FileSecurity::writeHtaccess($file->uri, TRUE);
+      }
+    }
+  }
+}
+
+/**
+ * Add a reference between user module status and LP status.
+ */
+function opigno_module_update_9003() {
+  // Add the field to count the number of activities that had been restarted in
+  // the module attempt.
+  $schema = \Drupal::database()->schema();
+  $table = 'user_module_status';
+  $field = 'lp_status';
+  if ($schema->fieldExists($table, $field)) {
+    return;
+  }
+
+  $schema->addField($table, $field, [
+    'type' => 'int',
+    'unsigned' => TRUE,
+    'not null' => FALSE,
+    'default' => NULL,
+    'description' => 'The learning path status entity the current module attempt belongs to',
+  ]);
+
+  $definition = BaseFieldDefinition::create('entity_reference')
+    ->setLabel(t('Learning path status'))
+    ->setDescription(t('The learning path status entity the current module attempt belongs to'))
+    ->setSetting('target_type', 'user_lp_status')
+    ->setSetting('target_bundles', ['user_lp_status' => 'user_lp_status']);
+
+  $update_manager = \Drupal::entityDefinitionUpdateManager();
+  $update_manager->installFieldStorageDefinition('lp_status', 'user_module_status', 'opigno_module', $definition);
+}
+
+/**
+ * Set the latest user LP attempt to module status entities.
+ */
+function opigno_module_update_9004(&$sandbox) {
+  // Get the list of users who have at least one LP status entity.
+  $db = \Drupal::database();
+  $uids = $db->select('user_lp_status', 'uls')
+    ->fields('uls', ['uid'])
+    ->condition('uls.uid', 0, '!=')
+    ->distinct()
+    ->execute()
+    ->fetchCol();
+  if (!$uids) {
+    return;
+  }
+
+  // For every user get the latest LP status for every training group.
+  foreach ($uids as $uid) {
+    $lp_statuses_query = $db->select('user_lp_status', 'uls');
+    $lp_statuses_query->addExpression('MAX(uls.id)', 'latest_lp_attempt_id');
+    $lp_statuses = $lp_statuses_query->fields('uls', ['gid'])
+      ->condition('uls.uid', $uid)
+      ->groupBy('uls.gid')
+      ->execute()
+      ->fetchAllKeyed();
+
+    // Update user module status entities, fill the reference between module
+    // attempt and the latest LP attempt.
+    foreach ($lp_statuses as $gid => $lp_status_id) {
+      $db->update('user_module_status')
+        ->fields(['lp_status' => $lp_status_id])
+        ->condition('user_id', $uid)
+        ->condition('learning_path', $gid)
+        ->isNull('lp_status')
+        ->execute();
+    }
+  }
+}
+
+/**
+ * Update dependencies.
+ */
+function opigno_module_update_dependencies() {
+  $dependencies['opigno_module'][9003] = [
+    'opigno_module' => 9004,
+  ];
+
+  return $dependencies;
 }

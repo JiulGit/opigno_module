@@ -24,6 +24,7 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Drupal\Core\Ajax\HtmlCommand;
 
 /**
  * Controller for all the actions of the Opigno module manager.
@@ -186,7 +187,15 @@ class OpignoModuleManagerController extends ControllerBase {
 
     // If errors, returns the form with errors and messages.
     if ($form_state->hasAnyErrors()) {
-      return $form;
+      unset($form['#prefix'], $form['#suffix']);
+      $form['error_messages'] = [
+        '#type' => 'status_messages',
+        '#weight' => -1000,
+      ];
+      $form['#sorted'] = FALSE;
+      $response->addCommand(new HtmlCommand('#activity-wrapper', $form));
+
+      return $response;
     }
 
     $entity = $form_state->getBuildInfo()['callback_object']->getEntity();

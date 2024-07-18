@@ -6,7 +6,7 @@ use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 
 /**
- * Class OpignoModuleSettingsForm.
+ * Defines the settings form for Opigno modules.
  *
  * @package Drupal\opigno_module\Form
  *
@@ -73,55 +73,51 @@ class OpignoModuleSettingsForm extends ConfigFormBase {
       '#default_value' => $config->get('description'),
     ];
 
-    $form['availability_options'] = array(
+    $form['availability_options'] = [
       '#type' => 'fieldset',
       '#title' => $this->t('Availability options'),
-    );
+    ];
 
-    $form['availability_options']['availability_closed_message'] = array(
+    $form['availability_options']['availability_closed_message'] = [
       '#type' => 'textarea',
       '#title' => $this->t('Module closed message'),
       '#default_value' => $config->get('availability_closed_message'),
-    );
+    ];
 
-    $form['availability_options']['availability_unavailable_message'] = array(
+    $form['availability_options']['availability_unavailable_message'] = [
       '#type' => 'textarea',
       '#title' => $this->t('Module not yet opened message'),
       '#default_value' => $config->get('availability_unavailable_message'),
-    );
+    ];
 
-    if (\Drupal::moduleHandler()->moduleExists('token')) {
-      $form['availability_options']['token_tree'] = [
-        '#theme' => 'token_tree_link',
-        '#show_restricted' => TRUE,
-        '#token_types' => array('opigno_module'),
-      ];
-    }
+    $form['availability_options']['token_tree'] = [
+      '#theme' => 'token_tree_link',
+      '#show_restricted' => TRUE,
+      '#token_types' => ['opigno_module'],
+    ];
 
-    $form['availability_options'] = array(
+    $form['availability_options'] = [
       '#type' => 'fieldset',
       '#title' => $this->t('Availability options'),
-    );
+    ];
 
-    $form['availability_options']['availability_closed_message'] = array(
+    $form['availability_options']['availability_closed_message'] = [
       '#type' => 'textarea',
       '#title' => $this->t('Module closed message'),
       '#default_value' => $config->get('availability_closed_message'),
-    );
+    ];
 
-    $form['availability_options']['availability_unavailable_message'] = array(
+    $form['availability_options']['availability_unavailable_message'] = [
       '#type' => 'textarea',
       '#title' => $this->t('Module not yet opened message'),
       '#default_value' => $config->get('availability_unavailable_message'),
-    );
+    ];
 
-    if (\Drupal::moduleHandler()->moduleExists('token')) {
-      $form['availability_options']['token_tree'] = [
-        '#theme' => 'token_tree_link',
-        '#show_restricted' => TRUE,
-        '#token_types' => array('opigno_module'),
-      ];
-    }
+    $form['availability_options']['token_tree'] = [
+      '#theme' => 'token_tree_link',
+      '#show_restricted' => TRUE,
+      '#token_types' => ['opigno_module'],
+    ];
 
     return parent::buildForm($form, $form_state);
   }

@@ -296,6 +296,7 @@ opigno_module.manager.add_module_activity:
   path: '/module/{opigno_module}/add-activity/{opigno_activity}/group/{group}'
   defaults:
     _controller: '\Drupal\opigno_module\Controller\OpignoModuleManagerController::addActivityToModule'
+    group: null
   requirements:
     _entity_access: 'opigno_module.update'
   options:

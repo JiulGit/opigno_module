@@ -2,12 +2,13 @@
 
 namespace Drupal\opigno_h5p\Plugin\ActivityAnswer;
 
+use Drupal\Core\Form\FormStateInterface;
 use Drupal\opigno_module\ActivityAnswerPluginBase;
 use Drupal\opigno_module\Entity\OpignoActivityInterface;
 use Drupal\opigno_module\Entity\OpignoAnswerInterface;
 
 /**
- * Class H5pActivityAnswer.
+ * Defines the H5pActivityAnswer plugin.
  *
  * @ActivityAnswer(
  *   id="opigno_h5p",
@@ -26,8 +27,7 @@ class H5pActivityAnswer extends ActivityAnswerPluginBase {
    * {@inheritdoc}
    */
   public function getScore(OpignoAnswerInterface $answer) {
-    /* @var $db_connection \Drupal\Core\Database\Connection */
-    $db_connection = \Drupal::service('database');
+    $db_connection = \Drupal::database();
     $score = 0;
     $activity = $answer->getActivity();
     $score_query = $db_connection->select('opigno_module_relationship', 'omr')
@@ -88,6 +88,18 @@ class H5pActivityAnswer extends ActivityAnswerPluginBase {
     ];
 
     $form['#attached']['library'][] = 'opigno_h5p/opigno_h5p.main';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function answeringFormSubmit(array &$form, FormStateInterface $form_state, OpignoAnswerInterface $answer): void {
+    $correct_response = $form_state->getValue('correct-response');
+    $response = $form_state->getValue('response');
+    $xapi_data = $form_state->getValue('xapi_data');
+    $answer->set('field_correct_response', $correct_response);
+    $answer->set('field_response', $response);
+    $answer->set('field_xapidata', $xapi_data);
   }
 
   /**

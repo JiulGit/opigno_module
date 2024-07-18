@@ -10,11 +10,15 @@ namespace Drupal\opigno_h5p\TypeProcessors;
 class TrueFalseProcessor extends TypeProcessor {
 
   /**
-   * Options for interaction and generates a human readable HTML report.
-   *
-   * @inheritdoc
+   * {@inheritdoc}
    */
-  public function generateHTML($description, $crp, $response, $extras = NULL, $scoreSettings = NULL) {
+  public function generateHtml(
+    string $description,
+    ?array $crp,
+    string $response,
+    ?object $extras = NULL,
+    ?object $scoreSettings = NULL
+  ): string {
     // We need some style for our report.
     $this->setStyle('opigno_h5p/opigno_h5p.true-false');
 
@@ -30,12 +34,9 @@ class TrueFalseProcessor extends TypeProcessor {
       'h5p-true-false-user-response-correct' :
       'h5p-true-false-user-response-wrong';
 
-    $header = $this->generateHeader($description, $scoreSettings);
-
-    return
-      '<div class="h5p-reporting-container h5p-true-false-container">' .
-        $header .
-        '<p class="h5p-true-false-task"><span class="h5p-true-false-correct-responses-pattern">' . $crp[0] . '</span><span class="' . $isCorrectClass . '">' . $response . '</span></p>' .
+    return '<div class="h5p-reporting-container h5p-true-false-container">' .
+      $this->generateHeader($description, $scoreSettings) .
+      '<p class="h5p-true-false-task"><span class="h5p-true-false-correct-responses-pattern">' . $crp[0] . '</span><span class="' . $isCorrectClass . '">' . $response . '</span></p>' .
       '</div>';
   }
 
@@ -47,19 +48,17 @@ class TrueFalseProcessor extends TypeProcessor {
       "<p class='h5p-reporting-description h5p-true-false-task-description'>{$description}</p>";
     $scoreHtml = $this->generateScoreHtml($scoreSettings);
 
-    return
-      "<div class='h5p-choices-header'>{$descriptionHtml}{$scoreHtml}</div>";
+    return "<div class='h5p-choices-header'>{$descriptionHtml}{$scoreHtml}</div>";
   }
 
   /**
    * Generate footer.
    */
   public function generateFooter() {
-    return
-      '<div class="h5p-true-false-footer">' .
-        '<span class="h5p-true-false-correct-responses-pattern">' . t('Correct Answer') . '</span>' .
-        '<span class="h5p-true-false-user-response-correct">' . t('Your correct answer') . '</span>' .
-        '<span class="h5p-true-false-user-response-wrong">' . t('Your incorrect answer') . '</span>' .
+    return '<div class="h5p-true-false-footer">' .
+      '<span class="h5p-true-false-correct-responses-pattern">' . $this->t('Correct Answer') . '</span>' .
+      '<span class="h5p-true-false-user-response-correct">' . $this->t('Your correct answer') . '</span>' .
+      '<span class="h5p-true-false-user-response-wrong">' . $this->t('Your incorrect answer') . '</span>' .
       '</div>';
   }
 

@@ -4,6 +4,7 @@ namespace Drupal\opigno_module\Entity;
 
 use Drupal\Core\Entity\EntityChangedInterface;
 use Drupal\Core\Entity\RevisionableInterface;
+use Drupal\group\Entity\GroupInterface;
 use Drupal\user\EntityOwnerInterface;
 
 /**
@@ -41,8 +42,43 @@ interface OpignoAnswerInterface extends EntityChangedInterface, EntityOwnerInter
   public function setCreatedTime($timestamp);
 
   /**
-   *  Get USer module status
+   * Gets the score the user earned for the answer.
+   *
+   * @return int
+   *   The answer score.
    */
-  public function getUserModuleStatus();
+  public function getScore(): int;
+
+  /**
+   * Gets the related User module status entity.
+   *
+   * @return \Drupal\opigno_module\Entity\UserModuleStatusInterface|null
+   *   The related user module status entity.
+   */
+  public function getUserModuleStatus(): ?UserModuleStatusInterface;
+
+  /**
+   * Gets the related activity entity.
+   *
+   * @return \Drupal\opigno_module\Entity\OpignoActivityInterface|null
+   *   The related activity entity.
+   */
+  public function getActivity(): ?OpignoActivityInterface;
+
+  /**
+   * Gets the related Opigno module entity.
+   *
+   * @return \Drupal\opigno_module\Entity\OpignoModuleInterface|null
+   *   The related Opigno module entity.
+   */
+  public function getModule(): ?OpignoModuleInterface;
+
+  /**
+   * Gets the related learning path entity.
+   *
+   * @return \Drupal\group\Entity\GroupInterface|null
+   *   The related learning path entity.
+   */
+  public function getLearningPath(): ?GroupInterface;
 
 }

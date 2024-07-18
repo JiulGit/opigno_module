@@ -2,7 +2,6 @@
 
 namespace Drupal\opigno_module\Form;
 
-use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Link;
 use Drupal\Core\File\FileSystemInterface;
@@ -11,17 +10,50 @@ use Drupal\h5p\Entity\H5PContent;
 use Drupal\h5p\H5PDrupal\H5PDrupal;
 use Drupal\h5peditor\H5PEditor\H5PEditorUtilities;
 use Drupal\media\Entity\Media;
-use Drupal\opigno_migration\H5PMigrationClasses\H5PEditorAjaxMigrate;
-use Drupal\opigno_module\Controller\ExternalPackageController;
+use Drupal\opigno_module\Controller\OpignoModuleController;
 use Drupal\opigno_module\Entity\OpignoActivity;
 use Drupal\opigno_module\Entity\OpignoModule;
 use Drupal\opigno_module\H5PImportClasses\H5PEditorAjaxImport;
 use Drupal\opigno_module\H5PImportClasses\H5PStorageImport;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
 
 /**
- * Import Module form.
+ * Defines the form for the module import.
+ *
+ * @package Drupal\opigno_module\Form
  */
-class ImportModuleForm extends FormBase {
+class ImportModuleForm extends ImportBaseForm {
+
+  /**
+   * The Opigno module service.
+   *
+   * @var \Drupal\opigno_module\Controller\OpignoModuleController
+   */
+  protected $moduleService;
+
+  /**
+   * {@inheritdoc}
+   */
+  public function __construct(OpignoModuleController $module_service, ...$default) {
+    parent::__construct(...$default);
+    $this->moduleService = $module_service;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container) {
+    return new static(
+      $container->get('opigno_module.opigno_module'),
+      $container->get('file_system'),
+      $container->get('datetime.time'),
+      $container->get('database'),
+      $container->get('serializer'),
+      $container->get('config.factory'),
+      $container->get('messenger')
+    );
+  }
 
   /**
    * {@inheritdoc}
@@ -58,7 +90,10 @@ class ImportModuleForm extends FormBase {
    */
   public function validateForm(array &$form, FormStateInterface $form_state) {
     // Validation is optional.
-    if (empty($_FILES['files']['name']['module_opi'])) {
+    $files = $this->getRequest()->files->get('files', []);
+    $uploaded = $files['module_opi'] ?? NULL;
+
+    if (!$uploaded instanceof UploadedFile || !$uploaded->getClientOriginalName()) {
       // Only need to validate if the field actually has a file.
       $form_state->setError(
         $form['module_opi'],
@@ -68,13 +103,46 @@ class ImportModuleForm extends FormBase {
   }
 
   /**
+   * Checks that the directory exists and is writable.
+   *
+   * Public directories will be protected by adding an .htaccess.
+   *
+   * @param string $directory
+   *   A string reference containing the name of a directory path or URI.
+   *
+   * @return bool
+   *   TRUE if the directory exists (or was created), is writable and is
+   *   protected (if it is public). FALSE otherwise.
+   */
+  protected function prepareDirectory(string $directory): bool {
+    if (!$this->fileSystem->prepareDirectory($directory, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY)) {
+      return FALSE;
+    }
+    if (0 === strpos($directory, 'public://')) {
+      return static::writeHtaccess($directory);
+    }
+
+    return TRUE;
+  }
+
+  /**
+   * Prepare temporary folder.
+   */
+  protected function prepareTemporary() {
+    // Prepare folder.
+    $this->fileSystem->deleteRecursive($this->tmp);
+    return $this->prepareDirectory($this->tmp);
+  }
+
+  /**
    * {@inheritdoc}
    */
   public function submitForm(array &$form, FormStateInterface $form_state) {
     // Prepare folder.
-    $temporary_file_path = 'public://opigno-import';
-    \Drupal::service('file_system')->deleteRecursive($temporary_file_path);
-    \Drupal::service('file_system')->prepareDirectory($temporary_file_path, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
+    if (!$this->prepareTemporary()) {
+      $this->messenger->addError($this->t('Failed to create directory.'));
+      return;
+    }
 
     // Prepare file validators.
     $extensions = ['opi'];
@@ -83,48 +151,46 @@ class ImportModuleForm extends FormBase {
     ];
 
     $files = [];
-    $file = file_save_upload('module_opi', $validators, $temporary_file_path, NULL, FileSystemInterface::EXISTS_REPLACE);
+    $file = file_save_upload('module_opi', $validators, $this->tmp, NULL, FileSystemInterface::EXISTS_REPLACE);
     if (!empty($file[0])) {
-      $path = \Drupal::service('file_system')->realpath($file[0]->getFileUri());
-      $folder = DRUPAL_ROOT . '/sites/default/files/opigno-import';
+      $path = $this->fileSystem->realpath($file[0]->getFileUri());
 
       $zip = new \ZipArchive();
       $result = $zip->open($path);
 
-      if ($zip->locateName('.htaccess') !== false) {
-        \Drupal::messenger()->addMessage(t('Unsafe files detected.'), 'error');
+      if (!static::validate($zip)) {
+        $this->messenger->addError($this->t('Unsafe files detected.'));
         $zip->close();
-        \Drupal::service('file_system')->delete($path);
-        \Drupal::service('file_system')->deleteRecursive($temporary_file_path);
+        $this->fileSystem->delete($path);
+        $this->fileSystem->deleteRecursive($this->tmp);
         return;
       }
 
       if ($result === TRUE) {
-        $zip->extractTo($folder);
+        $zip->extractTo($this->folder);
         $zip->close();
       }
 
-      \Drupal::service('file_system')->delete($path);
-      $files = scandir($folder);
+      $this->fileSystem->delete($path);
+      $files = scandir($this->folder);
     }
     if (in_array('list_of_files.json', $files)) {
-      $file_path = $temporary_file_path . '/list_of_files.json';
-      $real_path = \Drupal::service('file_system')->realpath($file_path);
+      $file_path = $this->tmp . '/list_of_files.json';
+      $real_path = $this->fileSystem->realpath($file_path);
       $file = file_get_contents($real_path);
 
       $format = 'json';
-      $serializer = \Drupal::service('serializer');
-      $content = $serializer->decode($file, $format);
+      $content = $this->serializer->decode($file, $format);
 
       if (empty($content['module'])) {
-        \Drupal::messenger()->addMessage(t('Incorrect archive structure.'), 'error');
+        $this->messenger->addError($this->t('Incorrect archive structure.'));
         return;
       }
 
-      $file_path = $temporary_file_path . '/' . $content['module'];
-      $real_path = \Drupal::service('file_system')->realpath($file_path);
+      $file_path = $this->tmp . '/' . $content['module'];
+      $real_path = $this->fileSystem->realpath($file_path);
       $file = file_get_contents($real_path);
-      $module_content_array = $serializer->decode($file, $format);
+      $module_content_array = $this->serializer->decode($file, $format);
       $module_content = reset($module_content_array);
 
       $new_module = OpignoModule::create([
@@ -159,17 +225,18 @@ class ImportModuleForm extends FormBase {
 
       $add_activities = [];
 
-      prepare_directory_structure_for_import();
+      opigno_module_prepare_directory_structure_for_import();
 
       foreach ($content['activities'] as $activity_file_name) {
-        $file_path = $temporary_file_path . '/' . $activity_file_name;
-        $real_path = \Drupal::service('file_system')->realpath($file_path);
+        $file_path = $this->tmp . '/' . $activity_file_name;
+        $real_path = $this->fileSystem->realpath($file_path);
         $file = file_get_contents($real_path);
 
         try {
-          $activity_content_array = $serializer->decode($file, $format);
+          $activity_content_array = $this->serializer->decode($file, $format);
           $activity_content = reset($activity_content_array);
-        } catch (\Exception $e) {
+        }
+        catch (\Exception $e) {
           continue;
         }
 
@@ -197,10 +264,10 @@ class ImportModuleForm extends FormBase {
 
           case 'opigno_scorm':
             foreach ($activity_content['files'] as $file_key => $file_content) {
-              $scorm_file_path = $temporary_file_path . '/' . $file_key;
-              $uri = \Drupal::service('file_system')->copy($scorm_file_path, 'public://opigno_scorm/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
+              $scorm_file_path = $this->tmp . '/' . $file_key;
+              $uri = $this->fileSystem->copy($scorm_file_path, 'public://opigno_scorm/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-              $file = File::Create([
+              $file = File::create([
                 'uri' => $uri,
                 'uid' => $this->currentUser()->id(),
                 'status' => $file_content['status'],
@@ -214,10 +281,10 @@ class ImportModuleForm extends FormBase {
 
           case 'opigno_tincan':
             foreach ($activity_content['files'] as $file_key => $file_content) {
-              $tincan_file_path = $temporary_file_path . '/' . $file_key;
-              $uri = \Drupal::service('file_system')->copy($tincan_file_path, 'public://opigno_tincan/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
+              $tincan_file_path = $this->tmp . '/' . $file_key;
+              $uri = $this->fileSystem->copy($tincan_file_path, 'public://opigno_tincan/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-              $file = File::Create([
+              $file = File::create([
                 'uri' => $uri,
                 'uid' => $this->currentUser()->id(),
                 'status' => $file_content['status'],
@@ -231,12 +298,12 @@ class ImportModuleForm extends FormBase {
 
           case 'opigno_slide':
             foreach ($activity_content['files'] as $file_key => $file_content) {
-              $slide_file_path = $temporary_file_path . '/' . $file_key;
-              $current_timestamp = \Drupal::time()->getCurrentTime();
+              $slide_file_path = $this->tmp . '/' . $file_key;
+              $current_timestamp = $this->time->getCurrentTime();
               $date = date('Y-m', $current_timestamp);
-              $uri = \Drupal::service('file_system')->copy($slide_file_path, 'public://' . $date . '/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
+              $uri = $this->fileSystem->copy($slide_file_path, 'public://' . $date . '/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-              $file = File::Create([
+              $file = File::create([
                 'uri' => $uri,
                 'uid' => $this->currentUser()->id(),
                 'status' => $file_content['status'],
@@ -260,12 +327,12 @@ class ImportModuleForm extends FormBase {
 
           case 'opigno_video':
             foreach ($activity_content['files'] as $file_key => $file_content) {
-              $video_file_path = $temporary_file_path . '/' . $file_key;
-              $current_timestamp = \Drupal::time()->getCurrentTime();
+              $video_file_path = $this->tmp . '/' . $file_key;
+              $current_timestamp = $this->time->getCurrentTime();
               $date = date('Y-m', $current_timestamp);
-              $uri = \Drupal::service('file_system')->copy($video_file_path, 'public://video-thumbnails/' . $date . '/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
+              $uri = $this->fileSystem->copy($video_file_path, 'public://video-thumbnails/' . $date . '/' . $file_content['file_name'], FileSystemInterface::EXISTS_RENAME);
 
-              $file = File::Create([
+              $file = File::create([
                 'uri' => $uri,
                 'uid' => $this->currentUser()->id(),
                 'status' => $file_content['status'],
@@ -278,19 +345,18 @@ class ImportModuleForm extends FormBase {
 
           case 'opigno_h5p':
             $h5p_content_id = $activity_content['opigno_h5p'][0]['h5p_content_id'];
-            $file = $folder . "/interactive-content-{$h5p_content_id}.h5p";
+            $file = $this->folder . "/interactive-content-{$h5p_content_id}.h5p";
             $interface = H5PDrupal::getInstance();
 
             if ($file) {
-              $file_service = \Drupal::service('file_system');
-              $dir = $file_service->realpath($temporary_file_path . '/h5p');
+              $dir = $this->fileSystem->realpath($this->tmp . '/h5p');
               $interface->getUploadedH5pFolderPath($dir);
-              $interface->getUploadedH5pPath($folder . "/interactive-content-{$h5p_content_id}.h5p");
+              $interface->getUploadedH5pPath($this->folder . "/interactive-content-{$h5p_content_id}.h5p");
 
               $editor = H5PEditorUtilities::getInstance();
               $h5pEditorAjax = new H5PEditorAjaxImport($editor->ajax->core, $editor, $editor->ajax->storage);
 
-              if ($h5pEditorAjax->isValidPackage(TRUE)) {
+              if ($h5pEditorAjax->isValidPackage()) {
                 // Add new libraries from file package.
                 $storage = new H5PStorageImport($h5pEditorAjax->core->h5pF, $h5pEditorAjax->core);
 
@@ -307,15 +373,12 @@ class ImportModuleForm extends FormBase {
                 $storage->saveLibraries();
 
                 $h5p_json = $dir . '/h5p.json';
-                $real_path = \Drupal::service('file_system')->realpath($h5p_json);
+                $real_path = $this->fileSystem->realpath($h5p_json);
                 $h5p_json = file_get_contents($real_path);
 
                 $format = 'json';
-                $serializer = \Drupal::service('serializer');
-                $h5p_json = $serializer->decode($h5p_json, $format);
+                $h5p_json = $this->serializer->decode($h5p_json, $format);
                 $dependencies = $h5p_json['preloadedDependencies'];
-
-                $database = \Drupal::database();
 
                 // Get ID of main library.
                 foreach ($h5p_json['preloadedDependencies'] as $dependency) {
@@ -325,7 +388,7 @@ class ImportModuleForm extends FormBase {
                   }
                 }
 
-                $query = $database->select('h5p_libraries', 'h_l');
+                $query = $this->database->select('h5p_libraries', 'h_l');
                 $query->condition('machine_name', $h5p_json['mainLibrary'], '=');
                 $query->condition('major_version', $h5p_json['majorVersion'], '=');
                 $query->condition('minor_version', $h5p_json['minorVersion'], '=');
@@ -334,7 +397,7 @@ class ImportModuleForm extends FormBase {
                 $main_library_id = $query->execute()->fetchField();
 
                 if (!$main_library_id) {
-                  $query = $database->select('h5p_libraries', 'h_l');
+                  $query = $this->database->select('h5p_libraries', 'h_l');
                   $query->condition('machine_name', $h5p_json['mainLibrary'], '=');
                   $query->fields('h_l', ['library_id']);
                   $query->orderBy('major_version', 'DESC');
@@ -344,7 +407,7 @@ class ImportModuleForm extends FormBase {
                 }
 
                 $content_json = $dir . '/content/content.json';
-                $real_path = \Drupal::service('file_system')->realpath($content_json);
+                $real_path = $this->fileSystem->realpath($content_json);
                 $content_json = file_get_contents($real_path);
 
                 $fields = [
@@ -362,12 +425,12 @@ class ImportModuleForm extends FormBase {
                 $h5p_content->save();
                 $new_activity->set('opigno_h5p', $h5p_content->id());
 
-                $h5p_dest_path = \Drupal::config('h5p.settings')->get('h5p_default_path');
-                $h5p_dest_path = !empty($h5p_dest_path) ? $h5p_dest_path : 'h5p';
+                $h5p_dest_path = $this->config->get('h5p_default_path');
+                $h5p_dest_path = $h5p_dest_path ?: 'h5p';
 
                 $dest_folder = DRUPAL_ROOT . '/sites/default/files/' . $h5p_dest_path . '/content/' . $h5p_content->id();
                 $source_folder = DRUPAL_ROOT . '/sites/default/files/opigno-import/h5p/content/*';
-                \Drupal::service('file_system')->prepareDirectory($dest_folder, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
+                $this->fileSystem->prepareDirectory($dest_folder, FileSystemInterface::MODIFY_PERMISSIONS | FileSystemInterface::CREATE_DIRECTORY);
                 shell_exec('rm ' . $dest_folder . '/content.json');
                 shell_exec('cp -r ' . $source_folder . ' ' . $dest_folder);
 
@@ -375,7 +438,7 @@ class ImportModuleForm extends FormBase {
                 $h5pEditorAjax->storage->removeTemporarilySavedFiles($h5pEditorAjax->core->h5pF->getUploadedH5pFolderPath());
 
                 foreach ($dependencies as $dependency_key => $dependency) {
-                  $query = $database->select('h5p_libraries', 'h_l');
+                  $query = $this->database->select('h5p_libraries', 'h_l');
                   $query->condition('machine_name', $dependency['machineName'], '=');
                   $query->condition('major_version', $dependency['majorVersion'], '=');
                   $query->condition('minor_version', $dependency['minorVersion'], '=');
@@ -384,7 +447,7 @@ class ImportModuleForm extends FormBase {
                   $library_id = $query->execute()->fetchField();
 
                   if (!$library_id) {
-                    $query = $database->select('h5p_libraries', 'h_l');
+                    $query = $this->database->select('h5p_libraries', 'h_l');
                     $query->condition('machine_name', $dependency['machineName'], '=');
                     $query->fields('h_l', ['library_id']);
                     $query->orderBy('major_version', 'DESC');
@@ -406,7 +469,7 @@ class ImportModuleForm extends FormBase {
                   }
 
                   if ($library_id) {
-                    $database->insert('h5p_content_libraries')
+                    $this->database->insert('h5p_content_libraries')
                       ->fields([
                         'content_id',
                         'library_id',
@@ -426,7 +489,7 @@ class ImportModuleForm extends FormBase {
                 }
 
                 if (!empty($main_library_values)) {
-                  $database->insert('h5p_content_libraries')
+                  $this->database->insert('h5p_content_libraries')
                     ->fields([
                       'content_id',
                       'library_id',
@@ -446,20 +509,18 @@ class ImportModuleForm extends FormBase {
         $add_activities[] = $new_activity;
       }
 
-      $opigno_module_obj = \Drupal::service('opigno_module.opigno_module');
-      $opigno_module_obj->activitiesToModule($add_activities, $new_module);
-
+      $this->moduleService->activitiesToModule($add_activities, $new_module);
       $route_parameters = [
         'opigno_module' => $new_module->id(),
       ];
 
-      \Drupal::messenger()->addMessage(t('Imported module %module', [
-        '%module' => Link::createFromRoute($new_module->label(), 'entity.opigno_module.canonical', $route_parameters)->toString()
+      $this->messenger->addMessage($this->t('Imported module %module', [
+        '%module' => Link::createFromRoute($new_module->label(), 'entity.opigno_module.canonical', $route_parameters)->toString(),
       ]));
 
       $form_state->setRedirect('entity.opigno_module.collection');
     }
-    \Drupal::service('file_system')->deleteRecursive($temporary_file_path);
+    $this->fileSystem->deleteRecursive($this->tmp);
   }
 
 }

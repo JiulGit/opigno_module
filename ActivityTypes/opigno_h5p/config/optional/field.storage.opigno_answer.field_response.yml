@@ -6,10 +6,8 @@ dependencies:
 id: opigno_answer.field_response
 field_name: field_response
 entity_type: opigno_answer
-type: string
+type: string_long
 settings:
-  max_length: 255
-  is_ascii: false
   case_sensitive: false
 module: core
 locked: false

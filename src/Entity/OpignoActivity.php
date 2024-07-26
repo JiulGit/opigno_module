@@ -444,6 +444,7 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
    * {@inheritdoc}
    */
   public function preSaveRevision(EntityStorageInterface $storage, \stdClass $record) {
+    /*
     parent::preSaveRevision($storage, $record);
 
     $revision_log_field_name = static::getRevisionMetadataKey($this->getEntityType(), 'revision_log_message');
@@ -463,6 +464,12 @@ class OpignoActivity extends RevisionableContentEntityBase implements OpignoActi
       $record->$revision_created_field_name = $record->id == $this->id()
         ? $this->getCreatedTime()
         : \Drupal::time()->getRequestTime();
+    }
+    */
+    parent::preSaveRevision($storage, $record);
+
+    if ($this->isNewRevision() && empty($record->revision_created)) {
+      $record->revision_created = \Drupal::time()->getRequestTime();
     }
   }
 
